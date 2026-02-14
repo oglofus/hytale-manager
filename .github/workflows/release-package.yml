@@ -83,7 +83,8 @@ jobs:
       - name: Publish package to GitHub Packages
         run: bun publish --registry https://npm.pkg.github.com --tolerate-republish
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ github.token }}
+          NPM_CONFIG_TOKEN: ${{ github.token }}
 
       - name: Pack release artifact
         id: pack
