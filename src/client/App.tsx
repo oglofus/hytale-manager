@@ -6,6 +6,15 @@ import {
   useRef,
   useState,
 } from "react";
+import {
+  CartesianGrid,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 import { Badge } from "./components/ui/badge";
 import { Button } from "./components/ui/button";
 import {
@@ -29,15 +38,6 @@ import {
   User,
 } from "./types";
 import { DashboardSocket } from "./ws";
-import {
-  CartesianGrid,
-  Line,
-  LineChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
 
 const TERMINAL_LIMIT = 4_000;
 const LONG_OPERATION_TIMEOUT_MS = 20 * 60 * 1000;
@@ -70,7 +70,10 @@ function formatRate(bytesPerSecond: number | null): string {
 }
 
 function normalizePluginKey(value: string): string | null {
-  const normalized = value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
+  const normalized = value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
   return normalized.length > 0 ? normalized : null;
 }
 
@@ -116,7 +119,10 @@ function parsePluginKeyFromFilename(filename: string): string | null {
 }
 
 function pluginKeyFromModEntry(mod: ModEntry): string | null {
-  return normalizePluginKey(mod.pluginName) ?? parsePluginKeyFromFilename(mod.filename);
+  return (
+    normalizePluginKey(mod.pluginName) ??
+    parsePluginKeyFromFilename(mod.filename)
+  );
 }
 
 function isTopLevelFolderFile(file: File): boolean {
@@ -1385,7 +1391,9 @@ export function App() {
                         max={65535}
                         step={1}
                         value={bindPortInput}
-                        onChange={(event) => setBindPortInput(event.target.value)}
+                        onChange={(event) =>
+                          setBindPortInput(event.target.value)
+                        }
                         placeholder="25565"
                         disabled={busy}
                       />
@@ -1486,7 +1494,8 @@ export function App() {
                       </span>
                     </p>
                     <p className="text-xs text-muted-foreground">
-                      Native backups are stored in {serverState?.backupDir ?? "-"}
+                      Native backups are stored in{" "}
+                      {serverState?.backupDir ?? "-"}
                       {". "}Older backups are moved to the archive folder by
                       Hytale when max count is reached.
                     </p>
@@ -1499,14 +1508,34 @@ export function App() {
             </CardContent>
           </Card>
 
-          <Card className="xl:col-span-9">
+          <Card className="xl:col-span-9 h-full">
             <CardHeader>
               <CardTitle>Terminal</CardTitle>
               <CardDescription>
                 Run commands and follow live output.
               </CardDescription>
             </CardHeader>
-            <CardContent className="space-y-3">
+            <CardContent className="flex flex-1 min-h-0 flex-col gap-3">
+              <div className="group/terminal relative min-h-0 flex-1">
+                <pre
+                  ref={terminalRef}
+                  onScroll={handleTerminalScroll}
+                  className="h-full overflow-auto rounded-none border bg-zinc-950 p-3 pr-24 text-xs leading-relaxed text-zinc-100"
+                >
+                  {terminalLines.join("\n")}
+                </pre>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={terminalScrollLock ? "default" : "secondary"}
+                  className="pointer-events-none absolute right-2 bottom-2 opacity-0 transition-opacity group-hover/terminal:pointer-events-auto group-hover/terminal:opacity-100 group-focus-within/terminal:pointer-events-auto group-focus-within/terminal:opacity-100"
+                  onClick={() => setTerminalScrollLock((current) => !current)}
+                >
+                  {terminalScrollLock
+                    ? "Auto-scroll locked"
+                    : "Lock auto-scroll"}
+                </Button>
+              </div>
               <form onSubmit={sendTerminalCommand} className="flex gap-2">
                 <Input
                   type="text"
@@ -1518,28 +1547,6 @@ export function App() {
                   Send
                 </Button>
               </form>
-              <div className="group/terminal relative">
-                <pre
-                  ref={terminalRef}
-                  onScroll={handleTerminalScroll}
-                  className="h-90 overflow-auto rounded-none border bg-zinc-950 p-3 pr-24 text-xs leading-relaxed text-zinc-100"
-                >
-                  {terminalLines.join("\n")}
-                </pre>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant={terminalScrollLock ? "default" : "secondary"}
-                  className="pointer-events-none absolute right-2 bottom-2 opacity-0 transition-opacity group-hover/terminal:pointer-events-auto group-hover/terminal:opacity-100 group-focus-within/terminal:pointer-events-auto group-focus-within/terminal:opacity-100"
-                  onClick={() =>
-                    setTerminalScrollLock((current) => !current)
-                  }
-                >
-                  {terminalScrollLock
-                    ? "Auto-scroll locked"
-                    : "Lock auto-scroll"}
-                </Button>
-              </div>
             </CardContent>
           </Card>
 
@@ -1550,7 +1557,9 @@ export function App() {
                 Live server metrics sampled every{" "}
                 {Math.max(
                   1,
-                  Math.round((serverState?.metricsSampleIntervalMs ?? 2000) / 1000),
+                  Math.round(
+                    (serverState?.metricsSampleIntervalMs ?? 2000) / 1000,
+                  ),
                 )}
                 s while running.
               </CardDescription>
@@ -1577,7 +1586,9 @@ export function App() {
                     </p>
                   </div>
                   <div className="rounded-none border p-3">
-                    <p className="text-xs text-muted-foreground">Virtual memory</p>
+                    <p className="text-xs text-muted-foreground">
+                      Virtual memory
+                    </p>
                     <p className="text-lg font-semibold">
                       {formatBytes(metricsSummary.latest.virtualMemoryBytes)}
                     </p>
@@ -1620,7 +1631,9 @@ export function App() {
                         <YAxis
                           yAxisId="cpu"
                           width={45}
-                          tickFormatter={(value) => `${Number(value).toFixed(0)}%`}
+                          tickFormatter={(value) =>
+                            `${Number(value).toFixed(0)}%`
+                          }
                         />
                         <YAxis
                           yAxisId="mem"
@@ -1718,11 +1731,11 @@ export function App() {
             </CardContent>
           </Card>
 
-          <Card className="xl:col-span-6">
+          <Card className="xl:col-span-6 h-full">
             <CardHeader>
               <CardTitle>Logs</CardTitle>
             </CardHeader>
-            <CardContent className="space-y-3">
+            <CardContent className="flex flex-1 min-h-0 flex-col gap-3">
               <div className="flex flex-wrap gap-2">
                 <Button
                   size="sm"
@@ -1754,7 +1767,7 @@ export function App() {
                   </li>
                 ))}
               </ul>
-              <pre className="h-80 overflow-auto rounded-none border bg-muted/40 p-3 text-xs leading-relaxed">
+              <pre className="min-h-0 flex-1 overflow-auto rounded-none border bg-muted/40 p-3 text-xs leading-relaxed">
                 {logContent}
               </pre>
             </CardContent>
@@ -1796,8 +1809,9 @@ export function App() {
                 </Button>
               </form>
               <p className="text-xs text-muted-foreground">
-                Folder sync uses only top-level <code>.jar</code>/<code>.zip</code>{" "}
-                files. Subfolders and other file types are ignored.
+                Folder sync uses only top-level <code>.jar</code>/
+                <code>.zip</code> files. Subfolders and other file types are
+                ignored.
               </p>
               <Button
                 size="sm"
