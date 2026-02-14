@@ -20,6 +20,9 @@ const uploadsDir = path.resolve(Bun.env.UPLOADS_DIR ?? path.join(dataDir, "uploa
 const toolsDir = path.resolve(Bun.env.TOOLS_DIR ?? path.join(dataDir, "tools"));
 const publicHost = host === "0.0.0.0" || host === "::" ? "localhost" : host;
 const publicBaseUrl = Bun.env.PUBLIC_BASE_URL ?? `http://${publicHost}:${port}`;
+const sessionCookieSecure = Bun.env.SESSION_COOKIE_SECURE
+  ? Bun.env.SESSION_COOKIE_SECURE === "true"
+  : Bun.env.NODE_ENV === "production";
 
 const smtp = Bun.env.SMTP_HOST && Bun.env.SMTP_USER && Bun.env.SMTP_PASS && Bun.env.SMTP_FROM
   ? {
@@ -36,6 +39,7 @@ export const config = {
   app: {
     host,
     port,
+    sessionCookieSecure,
     sessionTtlHours: Number(Bun.env.SESSION_TTL_HOURS ?? 24 * 14),
     inviteTtlHours: Number(Bun.env.INVITE_TTL_HOURS ?? 72),
     publicBaseUrl,

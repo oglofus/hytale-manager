@@ -6,6 +6,8 @@ process.env.NODE_ENV ??= "production";
 type ListenConfig = {
   host?: string;
   port?: string;
+  publicBaseUrl?: string;
+  sessionCookieSecure?: string;
 };
 
 function parsePort(raw: string): string {
@@ -20,6 +22,32 @@ function parseListen(raw: string): ListenConfig {
   const value = raw.trim();
   if (!value) {
     throw new Error("Listen value cannot be empty.");
+  }
+
+  if (value.startsWith("http://") || value.startsWith("https://")) {
+    const url = new URL(value);
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      throw new Error(`Invalid --listen protocol: ${url.protocol}`);
+    }
+    if (url.username || url.password) {
+      throw new Error("Invalid --listen URL: userinfo is not supported.");
+    }
+    if (url.pathname !== "/" || url.search || url.hash) {
+      throw new Error("Invalid --listen URL: path, query, and hash are not supported.");
+    }
+    if (!url.hostname) {
+      throw new Error("Invalid --listen URL: missing hostname.");
+    }
+
+    const host = url.hostname;
+    const port = parsePort(url.port || (url.protocol === "https:" ? "443" : "80"));
+    const hostForUrl = host.includes(":") ? `[${host}]` : host;
+    return {
+      host,
+      port,
+      publicBaseUrl: `${url.protocol}//${hostForUrl}:${port}`,
+      sessionCookieSecure: url.protocol === "https:" ? "true" : "false",
+    };
   }
 
   if (/^\d+$/.test(value)) {
@@ -46,7 +74,22 @@ function parseListen(raw: string): ListenConfig {
 }
 
 function printUsage(): void {
-  console.log("Usage: hytale-manager [--listen <host:port>] [--host <host>] [--port <port>]");
+  console.log("Usage: hytale-manager [--listen <host:port|http(s)://host:port>] [--host <host>] [--port <port>]");
+}
+
+function applyListen(parsed: ListenConfig): void {
+  if (parsed.host !== undefined) {
+    process.env.HOST = parsed.host;
+  }
+  if (parsed.port !== undefined) {
+    process.env.PORT = parsed.port;
+  }
+  if (parsed.publicBaseUrl !== undefined) {
+    process.env.PUBLIC_BASE_URL = parsed.publicBaseUrl;
+  }
+  if (parsed.sessionCookieSecure !== undefined) {
+    process.env.SESSION_COOKIE_SECURE = parsed.sessionCookieSecure;
+  }
 }
 
 function applyCliArgs(argv: string[]): void {
@@ -63,25 +106,13 @@ function applyCliArgs(argv: string[]): void {
       if (!value) {
         throw new Error("Missing value for --listen.");
       }
-      const parsed = parseListen(value);
-      if (parsed.host !== undefined) {
-        process.env.HOST = parsed.host;
-      }
-      if (parsed.port !== undefined) {
-        process.env.PORT = parsed.port;
-      }
+      applyListen(parseListen(value));
       i += 1;
       continue;
     }
 
     if (arg.startsWith("--listen=")) {
-      const parsed = parseListen(arg.slice("--listen=".length));
-      if (parsed.host !== undefined) {
-        process.env.HOST = parsed.host;
-      }
-      if (parsed.port !== undefined) {
-        process.env.PORT = parsed.port;
-      }
+      applyListen(parseListen(arg.slice("--listen=".length)));
       continue;
     }
 

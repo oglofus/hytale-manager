@@ -43,7 +43,7 @@ function sessionCookie(token: string): string {
     path: "/",
     httpOnly: true,
     sameSite: "Lax",
-    secure: Bun.env.NODE_ENV === "production",
+    secure: config.app.sessionCookieSecure,
   });
 }
 
@@ -53,7 +53,7 @@ export function clearSessionCookie(): string {
     path: "/",
     httpOnly: true,
     sameSite: "Lax",
-    secure: Bun.env.NODE_ENV === "production",
+    secure: config.app.sessionCookieSecure,
   });
 }
 

@@ -58,6 +58,12 @@ Listen on a specific host/IP and port:
 bunx --package github:oglofus/hytale-manager hytale-manager --listen 100.75.73.157:3000
 ```
 
+Auto-configure local-network HTTP mode (host, port, public URL, and non-secure session cookie):
+
+```bash
+bunx --package github:oglofus/hytale-manager hytale-manager --listen http://100.75.73.157:3000
+```
+
 Run from GitHub Packages (requires GitHub Packages auth):
 
 ```bash
@@ -107,6 +113,8 @@ Auth/session:
 
 - `SESSION_TTL_HOURS` (default: `336`)
 - `INVITE_TTL_HOURS` (default: `72`)
+- `SESSION_COOKIE_SECURE` (default: `true` when `NODE_ENV=production`, otherwise `false`) - set to `false` to allow HTTP cookies on a trusted local network.
+  - Automatically set from `--listen http://...` (`false`) or `--listen https://...` (`true`).
 
 Hytale runtime/install:
 
