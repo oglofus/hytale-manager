@@ -1,0 +1,65 @@
+{
+  "name": "@oglofus/hytale-manager",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "hytale-manager": "./bin/hytale-manager.ts"
+  },
+  "files": [
+    "bin",
+    "src",
+    "README.md",
+    "bun.lock",
+    "bunfig.toml"
+  ],
+  "engines": {
+    "bun": ">=1.2.0"
+  },
+  "scripts": {
+    "dev": "bun --hot src/server.ts",
+    "build": "bun run src/build.ts",
+    "start": "bun ./dist/server.js",
+    "start:bin": "bun ./bin/hytale-manager.ts",
+    "check": "bunx tsc --noEmit",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@base-ui/react": "^1.2.0",
+    "@hookform/resolvers": "^5.2.2",
+    "@radix-ui/react-label": "^2.1.8",
+    "@radix-ui/react-select": "^2.2.6",
+    "@radix-ui/react-separator": "^1.1.8",
+    "@radix-ui/react-slot": "^1.2.4",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "cmdk": "^1.1.1",
+    "date-fns": "^4.1.0",
+    "embla-carousel-react": "^8.6.0",
+    "input-otp": "^1.4.2",
+    "lucide-react": "^0.564.0",
+    "next-themes": "^0.4.6",
+    "nodemailer": "^6.10.0",
+    "radix-ui": "^1.4.3",
+    "react": "^19.1.1",
+    "react-day-picker": "^9.13.2",
+    "react-dom": "^19.1.1",
+    "react-hook-form": "^7.71.1",
+    "react-resizable-panels": "^4",
+    "recharts": "2.15.4",
+    "sonner": "^2.0.7",
+    "tailwind-merge": "^3.4.0",
+    "vaul": "^1.1.2",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/nodemailer": "^7.0.4",
+    "@types/react": "^19.1.12",
+    "@types/react-dom": "^19.1.9",
+    "bun-plugin-tailwind": "^0.1.2",
+    "tailwindcss": "^4.1.18",
+    "tw-animate-css": "^1.4.0",
+    "typescript": "^5.9.2"
+  }
+}
