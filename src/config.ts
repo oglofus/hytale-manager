@@ -11,13 +11,15 @@ type SmtpConfig = {
 };
 
 const cwd = process.cwd();
+const host = Bun.env.HOST ?? "127.0.0.1";
 const port = Number(Bun.env.PORT ?? 3000);
 const dataDir = path.resolve(Bun.env.DATA_DIR ?? path.join(cwd, "data"));
 const serverDir = path.resolve(Bun.env.HYTALE_SERVER_DIR ?? path.join(dataDir, "hytale-server"));
 const backupsDir = path.resolve(Bun.env.BACKUPS_DIR ?? path.join(dataDir, "backups"));
 const uploadsDir = path.resolve(Bun.env.UPLOADS_DIR ?? path.join(dataDir, "uploads"));
 const toolsDir = path.resolve(Bun.env.TOOLS_DIR ?? path.join(dataDir, "tools"));
-const publicBaseUrl = Bun.env.PUBLIC_BASE_URL ?? `http://localhost:${port}`;
+const publicHost = host === "0.0.0.0" || host === "::" ? "localhost" : host;
+const publicBaseUrl = Bun.env.PUBLIC_BASE_URL ?? `http://${publicHost}:${port}`;
 
 const smtp = Bun.env.SMTP_HOST && Bun.env.SMTP_USER && Bun.env.SMTP_PASS && Bun.env.SMTP_FROM
   ? {
@@ -32,6 +34,7 @@ const smtp = Bun.env.SMTP_HOST && Bun.env.SMTP_USER && Bun.env.SMTP_PASS && Bun.
 
 export const config = {
   app: {
+    host,
     port,
     sessionTtlHours: Number(Bun.env.SESSION_TTL_HOURS ?? 24 * 14),
     inviteTtlHours: Number(Bun.env.INVITE_TTL_HOURS ?? 72),

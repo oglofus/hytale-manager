@@ -601,6 +601,7 @@ function errorResponse(error: unknown): Response {
 }
 
 const server = Bun.serve<SocketData>({
+  hostname: config.app.host,
   port: config.app.port,
   development: Bun.env.NODE_ENV !== "production" ? { hmr: true, console: true } : false,
   routes: {
@@ -746,4 +747,4 @@ const server = Bun.serve<SocketData>({
   },
 });
 
-console.log(`Hytale manager running at http://localhost:${server.port}`);
+console.log(`Hytale manager running at ${config.app.publicBaseUrl}`);

@@ -52,6 +52,12 @@ This starts the dashboard on `http://localhost:3000` by default. Use env vars fo
 PORT=3210 DATA_DIR=./hytale-data bunx --package github:oglofus/hytale-manager#v0.1.0 hytale-manager
 ```
 
+Listen on a specific host/IP and port:
+
+```bash
+bunx --package github:oglofus/hytale-manager hytale-manager --listen 100.75.73.157:3000
+```
+
 Run from GitHub Packages (requires GitHub Packages auth):
 
 ```bash
@@ -87,13 +93,14 @@ bun run dev
 
 Core:
 
+- `HOST` (default: `127.0.0.1`)
 - `PORT` (default: `3000`)
 - `DATA_DIR` (default: `./data`)
 - `HYTALE_SERVER_DIR` (default: `${DATA_DIR}/hytale-server`)
 - `BACKUPS_DIR` (default: `${DATA_DIR}/backups`)
 - `UPLOADS_DIR` (default: `${DATA_DIR}/uploads`)
 - `TOOLS_DIR` (default: `${DATA_DIR}/tools`)
-- `PUBLIC_BASE_URL` (default: `http://localhost:<PORT>`)
+- `PUBLIC_BASE_URL` (default: `http://<HOST>:<PORT>`; if `HOST` is `0.0.0.0`/`::`, defaults to `http://localhost:<PORT>`)
 - `HYTALE_SECRET_KEY` (optional but recommended) - master secret used to encrypt dashboard-stored credentials (including CurseForge API key).
 
 Auth/session:
