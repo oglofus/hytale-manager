@@ -1318,15 +1318,9 @@ export function App() {
           </CardContent>
         </Card>
 
-        <section className="grid gap-4 xl:grid-cols-12">
-          <Card className="xl:col-span-3">
-            <CardHeader>
-              <CardTitle>Install</CardTitle>
-              <CardDescription>
-                Native downloader is the only install source.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-3">
+        <section className="grid gap-4 xl:grid-cols-12 @container">
+          <Card className="xl:col-span-3 block h-full">
+            <CardContent className="space-y-3 h-full flex flex-col gap-2">
               {!serverState?.installed || serverState?.updateAvailable ? (
                 <Button
                   onClick={() => void handleInstall()}
@@ -1380,7 +1374,10 @@ export function App() {
               {user.role === "owner" && (
                 <>
                   <Separator />
-                  <form onSubmit={saveRuntimeSettings} className="space-y-3">
+                  <form
+                    onSubmit={saveRuntimeSettings}
+                    className="space-y-3 mt-auto"
+                  >
                     <h3 className="text-sm font-semibold">Runtime settings</h3>
                     <div className="space-y-2">
                       <Label htmlFor="server-bind-port">Game port</Label>
@@ -1499,7 +1496,12 @@ export function App() {
                       {". "}Older backups are moved to the archive folder by
                       Hytale when max count is reached.
                     </p>
-                    <Button type="submit" size="sm" disabled={busy}>
+                    <Button
+                      type="submit"
+                      size="sm"
+                      className="w-full"
+                      disabled={busy}
+                    >
                       Save runtime settings
                     </Button>
                   </form>
@@ -1508,19 +1510,13 @@ export function App() {
             </CardContent>
           </Card>
 
-          <Card className="xl:col-span-9 h-full">
-            <CardHeader>
-              <CardTitle>Terminal</CardTitle>
-              <CardDescription>
-                Run commands and follow live output.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="flex flex-1 min-h-0 flex-col gap-3">
-              <div className="group/terminal relative min-h-0 flex-1">
+          <Card className="xl:col-span-9">
+            <CardContent className="space-y-3">
+              <div className="group/terminal relative overflow-hidden">
                 <pre
                   ref={terminalRef}
                   onScroll={handleTerminalScroll}
-                  className="h-full overflow-auto rounded-none border bg-zinc-950 p-3 pr-24 text-xs leading-relaxed text-zinc-100"
+                  className="overflow-auto h-[calc(100vh-200px)] rounded-none border bg-zinc-950 p-3 pr-24 text-xs leading-relaxed text-zinc-100"
                 >
                   {terminalLines.join("\n")}
                 </pre>
@@ -1731,11 +1727,11 @@ export function App() {
             </CardContent>
           </Card>
 
-          <Card className="xl:col-span-6 h-full">
+          <Card className="xl:col-span-6">
             <CardHeader>
               <CardTitle>Logs</CardTitle>
             </CardHeader>
-            <CardContent className="flex flex-1 min-h-0 flex-col gap-3">
+            <CardContent className="space-y-3">
               <div className="flex flex-wrap gap-2">
                 <Button
                   size="sm"
@@ -1767,7 +1763,7 @@ export function App() {
                   </li>
                 ))}
               </ul>
-              <pre className="min-h-0 flex-1 overflow-auto rounded-none border bg-muted/40 p-3 text-xs leading-relaxed">
+              <pre className="overflow-auto h-[calc(100vh-170px)] rounded-none border bg-zinc-950 p-3 pr-24 text-xs leading-relaxed text-zinc-100">
                 {logContent}
               </pre>
             </CardContent>
@@ -1821,7 +1817,7 @@ export function App() {
               >
                 Refresh mods
               </Button>
-              <ul className="max-h-105 space-y-2 overflow-auto">
+              <ul className="h-[calc(100vh-140px)] space-y-2 overflow-auto">
                 {mods.map((mod) => (
                   <li
                     key={mod.filename}
