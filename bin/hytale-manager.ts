@@ -201,5 +201,6 @@ if (process.env.NODE_ENV === "development") {
   await import("../src/server.ts");
 } else {
   await ensureProductionBundle(packageRoot);
+  process.chdir(path.join(packageRoot, "dist"));
   await import(pathToFileURL(path.join(packageRoot, "dist", "server.js")).href);
 }
