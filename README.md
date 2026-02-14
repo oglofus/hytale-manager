@@ -1,4 +1,4 @@
-# Hytale Manager [![GitHub Release](https://img.shields.io/github/v/release/oglofus/hytale-manager)](https://github.com/oglofus/hytale-manager/releases) [![Build and publish GitHub release](https://github.com/oglofus/hytale-manager/actions/workflows/release-package.yml/badge.svg)](https://github.com/oglofus/hytale-manager/actions/workflows/release-package.yml)
+# Hytale Manager [![GitHub Release](https://img.shields.io/github/v/release/oglofus/hytale-manager)](https://github.com/oglofus/hytale-manager/releases) [![Release and publish package](https://github.com/oglofus/hytale-manager/actions/workflows/release-package.yml/badge.svg)](https://github.com/oglofus/hytale-manager/actions/workflows/release-package.yml)
 
 A Bun-first web dashboard for managing a single Hytale server instance.
 
@@ -50,6 +50,19 @@ This starts the dashboard on `http://localhost:3000` by default. Use env vars fo
 
 ```bash
 PORT=3210 DATA_DIR=./hytale-data bunx --package github:oglofus/hytale-manager#v0.1.0 hytale-manager
+```
+
+Run from GitHub Packages (requires GitHub Packages auth):
+
+```bash
+bunx @oglofus/hytale-manager
+```
+
+To use that command, configure `.npmrc`:
+
+```ini
+@oglofus:registry=https://npm.pkg.github.com
+//npm.pkg.github.com/:_authToken=${GITHUB_TOKEN}
 ```
 
 Run from source:
@@ -161,7 +174,7 @@ If SMTP is not configured, invite links are still created and shown in the dashb
 - `bun run start` - run built server.
 - `bun run start:bin` - run the publishable CLI entrypoint (`bin/hytale-manager.ts`).
 
-## GitHub release workflow
+## GitHub release and package workflow
 
 GitHub Actions workflow: `.github/workflows/release-package.yml`
 
@@ -170,6 +183,7 @@ GitHub Actions workflow: `.github/workflows/release-package.yml`
   - manual `workflow_dispatch` (input tag)
 - Validates tag version matches `package.json` version
 - Runs `bun run check` + `bun run build`
+- Publishes the package to GitHub Packages (`https://npm.pkg.github.com`)
 - Creates a GitHub Release with:
   - packed artifact (`*.tgz`) from `bun pm pack`
   - `SHA256SUMS.txt`
@@ -235,3 +249,4 @@ ISC License. See the LICENSE file for details.
 
 - Repository: https://github.com/oglofus/hytale-manager
 - Releases: https://github.com/oglofus/hytale-manager/releases
+- GitHub Packages: https://github.com/orgs/oglofus/packages?repo_name=hytale-manager
