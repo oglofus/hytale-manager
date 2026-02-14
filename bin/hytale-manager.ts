@@ -1,5 +1,12 @@
 #!/usr/bin/env bun
 
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+// Preserve the user's launch directory for runtime data defaults.
+const launchCwd = process.cwd();
+process.env.HYTALE_MANAGER_CWD ??= launchCwd;
+
 // bunx entrypoint: default to production-like runtime unless explicitly overridden.
 process.env.NODE_ENV ??= "production";
 
@@ -158,5 +165,10 @@ try {
   printUsage();
   process.exit(1);
 }
+
+// Run from the package root to avoid Bun HTML asset URL resolution quirks when
+// bunx is launched inside another project directory.
+const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+process.chdir(packageRoot);
 
 await import("../src/server.ts");

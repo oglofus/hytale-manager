@@ -10,14 +10,17 @@ type SmtpConfig = {
   from: string;
 };
 
-const cwd = process.cwd();
+const cwd = path.resolve(Bun.env.HYTALE_MANAGER_CWD ?? process.cwd());
+const resolveFromCwd = (pathname: string): string => {
+  return path.isAbsolute(pathname) ? pathname : path.resolve(cwd, pathname);
+};
 const host = Bun.env.HOST ?? "127.0.0.1";
 const port = Number(Bun.env.PORT ?? 3000);
-const dataDir = path.resolve(Bun.env.DATA_DIR ?? path.join(cwd, "data"));
-const serverDir = path.resolve(Bun.env.HYTALE_SERVER_DIR ?? path.join(dataDir, "hytale-server"));
-const backupsDir = path.resolve(Bun.env.BACKUPS_DIR ?? path.join(dataDir, "backups"));
-const uploadsDir = path.resolve(Bun.env.UPLOADS_DIR ?? path.join(dataDir, "uploads"));
-const toolsDir = path.resolve(Bun.env.TOOLS_DIR ?? path.join(dataDir, "tools"));
+const dataDir = resolveFromCwd(Bun.env.DATA_DIR ?? path.join(cwd, "data"));
+const serverDir = resolveFromCwd(Bun.env.HYTALE_SERVER_DIR ?? path.join(dataDir, "hytale-server"));
+const backupsDir = resolveFromCwd(Bun.env.BACKUPS_DIR ?? path.join(dataDir, "backups"));
+const uploadsDir = resolveFromCwd(Bun.env.UPLOADS_DIR ?? path.join(dataDir, "uploads"));
+const toolsDir = resolveFromCwd(Bun.env.TOOLS_DIR ?? path.join(dataDir, "tools"));
 const publicHost = host === "0.0.0.0" || host === "::" ? "localhost" : host;
 const publicBaseUrl = Bun.env.PUBLIC_BASE_URL ?? `http://${publicHost}:${port}`;
 const sessionCookieSecure = Bun.env.SESSION_COOKIE_SECURE
@@ -51,15 +54,15 @@ export const config = {
   },
   hytale: {
     serverDir,
-    managedJavaDir: path.resolve(Bun.env.HYTALE_MANAGED_JAVA_DIR ?? path.join(toolsDir, "temurin-jdk-25")),
-    downloadCacheDir: path.resolve(Bun.env.HYTALE_DOWNLOAD_CACHE_DIR ?? path.join(toolsDir, "download-cache")),
-    curseForgeStatePath: path.resolve(Bun.env.HYTALE_CURSEFORGE_STATE_PATH ?? path.join(dataDir, "curseforge-mods.json")),
+    managedJavaDir: resolveFromCwd(Bun.env.HYTALE_MANAGED_JAVA_DIR ?? path.join(toolsDir, "temurin-jdk-25")),
+    downloadCacheDir: resolveFromCwd(Bun.env.HYTALE_DOWNLOAD_CACHE_DIR ?? path.join(toolsDir, "download-cache")),
+    curseForgeStatePath: resolveFromCwd(Bun.env.HYTALE_CURSEFORGE_STATE_PATH ?? path.join(dataDir, "curseforge-mods.json")),
     curseForgeApiHost: Bun.env.HYTALE_CURSEFORGE_API_HOST ?? "api.curseforge.com",
     curseForgeApiKey: Bun.env.HYTALE_CURSEFORGE_API_KEY ?? Bun.env.CURSEFORGE_API_KEY ?? "",
     curseForgeGameId: Number(Bun.env.HYTALE_CURSEFORGE_GAME_ID ?? Bun.env.CURSEFORGE_GAME_ID ?? 70216),
     curseForgeClassId: Number(Bun.env.HYTALE_CURSEFORGE_CLASS_ID ?? Bun.env.CURSEFORGE_CLASS_ID ?? 0),
     curseForgeDefaultPageSize: Number(Bun.env.HYTALE_CURSEFORGE_PAGE_SIZE ?? 20),
-    nexusStatePath: path.resolve(Bun.env.HYTALE_NEXUS_STATE_PATH ?? path.join(dataDir, "nexus-mods.json")),
+    nexusStatePath: resolveFromCwd(Bun.env.HYTALE_NEXUS_STATE_PATH ?? path.join(dataDir, "nexus-mods.json")),
     nexusApiHost: Bun.env.HYTALE_NEXUS_API_HOST ?? "api.nexusmods.com",
     nexusWebHost: Bun.env.HYTALE_NEXUS_WEB_HOST ?? "www.nexusmods.com",
     nexusSsoWsUrl: Bun.env.HYTALE_NEXUS_SSO_WS_URL ?? "wss://sso.nexusmods.com",
@@ -78,7 +81,7 @@ export const config = {
     javaExtractTimeoutMs: Number(Bun.env.HYTALE_JAVA_EXTRACT_TIMEOUT_MS ?? 900_000),
     startArgs: Bun.env.HYTALE_START_ARGS ?? "-XX:AOTCache=HytaleServer.aot -jar HytaleServer.jar --assets Assets.zip",
     stopCommand: Bun.env.HYTALE_STOP_COMMAND ?? "/stop",
-    downloaderCredentialsPath: path.resolve(
+    downloaderCredentialsPath: resolveFromCwd(
       Bun.env.HYTALE_DOWNLOADER_CREDENTIALS_PATH ?? path.join(dataDir, ".hytale-downloader-credentials.json"),
     ),
     downloaderEnvironment: Bun.env.HYTALE_DOWNLOADER_ENVIRONMENT ?? "release",
