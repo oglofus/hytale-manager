@@ -7,6 +7,15 @@ export type User = {
   createdAt: string;
 };
 
+export type ServerMetricPoint = {
+  timestamp: string;
+  cpuPercent: number;
+  rssBytes: number;
+  virtualMemoryBytes: number;
+  networkRxBytesPerSec: number | null;
+  networkTxBytesPerSec: number | null;
+};
+
 export type ServerState = {
   status: "stopped" | "starting" | "running" | "stopping" | "installing";
   startedAt: string | null;
@@ -14,20 +23,24 @@ export type ServerState = {
   installed: boolean;
   javaInstalled: boolean;
   lifecycleReady: boolean;
-  curseForgeConfigured: boolean;
-  curseForgeGameId: number | null;
-  curseForgeClassId: number | null;
-  curseForgeSource: "env" | "dashboard" | null;
-  nexusConfigured: boolean;
-  nexusGameDomain: string | null;
-  nexusSource: "env" | "dashboard" | null;
-  nexusSsoReady: boolean;
   installedVersion: string | null;
   latestVersion: string | null;
   updateAvailable: boolean;
   patchline: string;
   command: string;
   serverDir: string;
+  bindPort: number;
+  autoBackupEnabled: boolean;
+  backupFrequencyMinutes: number;
+  backupMaxCount: number;
+  backupDir: string;
+  javaMinHeapMb: number;
+  javaMaxHeapMb: number;
+  javaExtraArgs: string;
+  metricsSampling: boolean;
+  metricsSampleIntervalMs: number;
+  metricsHistoryLimit: number;
+  metrics: ServerMetricPoint[];
   terminal: string[];
 };
 
@@ -36,95 +49,20 @@ export type ModEntry = {
   size: number;
   updatedAt: string;
   disabled: boolean;
-};
-
-export type CurseForgeSearchSort = "popularity" | "lastUpdated" | "name" | "author" | "totalDownloads";
-
-export type CurseForgeSearchMod = {
-  id: number;
-  name: string;
-  summary: string;
-  authors: string[];
-  downloadCount: number;
-  dateModified: string;
-  dateReleased: string;
-  logoUrl: string | null;
-  websiteUrl: string | null;
-};
-
-export type CurseForgeSearchResult = {
-  mods: CurseForgeSearchMod[];
-  page: number;
-  pageSize: number;
-  totalCount: number;
-  sort: CurseForgeSearchSort;
-  query: string;
-};
-
-export type CurseForgeInstalledMod = {
-  modId: number;
-  modName: string;
-  authorNames: string[];
-  fileId: number;
-  fileName: string;
-  localFilename: string;
-  installedAt: string;
-  dateModified: string;
-  websiteUrl: string | null;
-  updateAvailable: boolean;
-  latestFileId: number | null;
-  latestFileName: string | null;
-  localFileMissing: boolean;
-};
-
-export type NexusSearchSort = "popularity" | "downloads" | "lastUpdated" | "name";
-
-export type NexusSearchMod = {
-  modId: number;
-  uid: string;
-  name: string;
-  summary: string;
-  author: string;
-  downloads: number;
-  endorsements: number;
-  updatedAt: string;
-  createdAt: string;
-  thumbnailUrl: string | null;
-  version: string;
-};
-
-export type NexusSearchResult = {
-  mods: NexusSearchMod[];
-  page: number;
-  pageSize: number;
-  totalCount: number;
-  sort: NexusSearchSort;
-  query: string;
-};
-
-export type NexusInstalledMod = {
-  modId: number;
-  modUid: string;
-  modName: string;
-  author: string;
-  fileId: number;
-  fileUid: string;
-  fileName: string;
-  fileVersion: string;
-  localFilename: string;
-  installedAt: string;
-  updatedAt: string;
-  pageUrl: string;
-  updateAvailable: boolean;
-  latestFileId: number | null;
-  latestFileName: string | null;
-  localFileMissing: boolean;
+  pluginName: string;
+  pluginVersion: string | null;
+  metadataSource: "manifest" | "filename" | "unknown";
 };
 
 export type BackupEntry = {
   id: string;
+  name: string;
   createdAt: string;
   note: string;
+  size: number;
+  archived: boolean;
+  source: "manual" | "native";
+  format: "directory" | "zip";
   itemCount: number;
 };
 
@@ -147,8 +85,6 @@ export type BootstrapPayload = {
   user: User;
   serverState: ServerState;
   mods: ModEntry[];
-  curseForgeInstalled: CurseForgeInstalledMod[];
-  nexusInstalled: NexusInstalledMod[];
   backups: BackupEntry[];
   logs: LogFileSummary[];
   invites: InviteSummary[];

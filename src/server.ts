@@ -61,13 +61,11 @@ function sendAck(
 }
 
 async function sendBootstrap(socket: ServerWebSocket<SocketData>): Promise<void> {
-  const [serverState, mods, backups, logs, curseForgeInstalled, nexusInstalled] = await Promise.all([
+  const [serverState, mods, backups, logs] = await Promise.all([
     manager.snapshot(),
     manager.listMods(),
     manager.listBackups(),
     manager.listLogFiles(),
-    manager.listCurseForgeInstalledMods(false),
-    manager.listNexusInstalledMods(false),
   ]);
 
   socket.send(
@@ -78,8 +76,6 @@ async function sendBootstrap(socket: ServerWebSocket<SocketData>): Promise<void>
         user: socket.data.user,
         serverState,
         mods,
-        curseForgeInstalled,
-        nexusInstalled,
         backups,
         logs,
         invites: socket.data.user.role === "owner" ? getInviteSummaries() : [],
@@ -99,6 +95,36 @@ async function dispatchCommand(socket: ServerWebSocket<SocketData>, command: Com
     switch (command.action) {
       case "server.status": {
         const snapshot = await manager.snapshot();
+        sendAck(socket, requestId, true, { data: snapshot });
+        return;
+      }
+
+      case "server.runtime.update": {
+        assertOwner(socket.data.user);
+        const bindPortRaw = command.payload?.bindPort;
+        const autoBackupEnabledRaw = command.payload?.autoBackupEnabled;
+        const backupFrequencyMinutesRaw = command.payload?.backupFrequencyMinutes;
+        const backupMaxCountRaw = command.payload?.backupMaxCount;
+        const javaMinHeapMbRaw = command.payload?.javaMinHeapMb;
+        const javaMaxHeapMbRaw = command.payload?.javaMaxHeapMb;
+        const javaExtraArgsRaw = command.payload?.javaExtraArgs;
+
+        const snapshot = await manager.updateServerRuntimeSettings({
+          bindPort: bindPortRaw === undefined ? undefined : Number(bindPortRaw),
+          autoBackupEnabled: autoBackupEnabledRaw === undefined
+            ? undefined
+            : autoBackupEnabledRaw === true ||
+              autoBackupEnabledRaw === "true" ||
+              autoBackupEnabledRaw === 1 ||
+              autoBackupEnabledRaw === "1",
+          backupFrequencyMinutes:
+            backupFrequencyMinutesRaw === undefined ? undefined : Number(backupFrequencyMinutesRaw),
+          backupMaxCount: backupMaxCountRaw === undefined ? undefined : Number(backupMaxCountRaw),
+          javaMinHeapMb: javaMinHeapMbRaw === undefined ? undefined : Number(javaMinHeapMbRaw),
+          javaMaxHeapMb: javaMaxHeapMbRaw === undefined ? undefined : Number(javaMaxHeapMbRaw),
+          javaExtraArgs: javaExtraArgsRaw === undefined ? undefined : String(javaExtraArgsRaw),
+        });
+
         sendAck(socket, requestId, true, { data: snapshot });
         return;
       }
@@ -220,153 +246,6 @@ async function dispatchCommand(socket: ServerWebSocket<SocketData>, command: Com
         }
         await manager.cancelModUpload(uploadId);
         sendAck(socket, requestId, true, { data: { ok: true } });
-        return;
-      }
-
-      case "curseforge.search": {
-        const query = (command.payload?.query as string | undefined) ?? "";
-        const sort = (command.payload?.sort as string | undefined) ?? "popularity";
-        const page = Number(command.payload?.page ?? 1);
-        const pageSize = Number(command.payload?.pageSize ?? 20);
-        const result = await manager.searchCurseForgeMods({
-          query,
-          sort: sort as "popularity" | "lastUpdated" | "name" | "author" | "totalDownloads",
-          page,
-          pageSize,
-        });
-        sendAck(socket, requestId, true, { data: result });
-        return;
-      }
-
-      case "curseforge.connect": {
-        assertOwner(socket.data.user);
-        const apiKey = (command.payload?.apiKey as string | undefined) ?? "";
-        const gameId = Number(command.payload?.gameId ?? 0);
-        const classIdRaw = command.payload?.classId;
-        const classId = classIdRaw === undefined || classIdRaw === null || classIdRaw === ""
-          ? undefined
-          : Number(classIdRaw);
-
-        const result = await manager.connectCurseForge({
-          apiKey,
-          gameId,
-          classId,
-        });
-
-        sendAck(socket, requestId, true, {
-          data: {
-            ...result,
-            serverState: await manager.snapshot(),
-          },
-        });
-        return;
-      }
-
-      case "curseforge.installed": {
-        const checkUpdates = (command.payload?.checkUpdates as boolean | undefined) ?? false;
-        sendAck(socket, requestId, true, { data: await manager.listCurseForgeInstalledMods(checkUpdates) });
-        return;
-      }
-
-      case "curseforge.install": {
-        const modId = Number(command.payload?.modId ?? 0);
-        if (!modId) {
-          commandError("modId is required.");
-        }
-        sendAck(socket, requestId, true, { data: await manager.installCurseForgeMod(modId) });
-        return;
-      }
-
-      case "curseforge.checkUpdates": {
-        sendAck(socket, requestId, true, { data: await manager.checkCurseForgeUpdates() });
-        return;
-      }
-
-      case "curseforge.update": {
-        const modId = Number(command.payload?.modId ?? 0);
-        if (!modId) {
-          commandError("modId is required.");
-        }
-        sendAck(socket, requestId, true, { data: await manager.updateCurseForgeMod(modId) });
-        return;
-      }
-
-      case "curseforge.updateAll": {
-        sendAck(socket, requestId, true, { data: await manager.updateAllCurseForgeMods() });
-        return;
-      }
-
-      case "nexus.sso.start": {
-        assertOwner(socket.data.user);
-        sendAck(socket, requestId, true, { data: manager.createNexusSsoChallenge() });
-        return;
-      }
-
-      case "nexus.connect": {
-        assertOwner(socket.data.user);
-        const apiKey = (command.payload?.apiKey as string | undefined) ?? "";
-        const gameDomain = (command.payload?.gameDomain as string | undefined) ?? undefined;
-        const result = await manager.connectNexus({
-          apiKey,
-          gameDomain,
-        });
-
-        sendAck(socket, requestId, true, {
-          data: {
-            ...result,
-            serverState: await manager.snapshot(),
-            installed: await manager.listNexusInstalledMods(false),
-          },
-        });
-        return;
-      }
-
-      case "nexus.search": {
-        const query = (command.payload?.query as string | undefined) ?? "";
-        const sort = (command.payload?.sort as string | undefined) ?? "popularity";
-        const page = Number(command.payload?.page ?? 1);
-        const pageSize = Number(command.payload?.pageSize ?? 20);
-        const result = await manager.searchNexusMods({
-          query,
-          sort: sort as "popularity" | "downloads" | "lastUpdated" | "name",
-          page,
-          pageSize,
-        });
-        sendAck(socket, requestId, true, { data: result });
-        return;
-      }
-
-      case "nexus.installed": {
-        const checkUpdates = (command.payload?.checkUpdates as boolean | undefined) ?? false;
-        sendAck(socket, requestId, true, { data: await manager.listNexusInstalledMods(checkUpdates) });
-        return;
-      }
-
-      case "nexus.install": {
-        const modId = Number(command.payload?.modId ?? 0);
-        if (!modId) {
-          commandError("modId is required.");
-        }
-        sendAck(socket, requestId, true, { data: await manager.installNexusMod(modId) });
-        return;
-      }
-
-      case "nexus.checkUpdates": {
-        sendAck(socket, requestId, true, { data: await manager.checkNexusUpdates() });
-        return;
-      }
-
-      case "nexus.update": {
-        const modId = Number(command.payload?.modId ?? 0);
-        if (!modId) {
-          commandError("modId is required.");
-        }
-        sendAck(socket, requestId, true, { data: await manager.updateNexusMod(modId) });
-        return;
-      }
-
-      case "nexus.updateAll": {
-        sendAck(socket, requestId, true, { data: await manager.updateAllNexusMods() });
         return;
       }
 

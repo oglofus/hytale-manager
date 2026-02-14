@@ -19,6 +19,7 @@ const port = Number(Bun.env.PORT ?? 3000);
 const dataDir = resolveFromCwd(Bun.env.DATA_DIR ?? path.join(cwd, "data"));
 const serverDir = resolveFromCwd(Bun.env.HYTALE_SERVER_DIR ?? path.join(dataDir, "hytale-server"));
 const backupsDir = resolveFromCwd(Bun.env.BACKUPS_DIR ?? path.join(dataDir, "backups"));
+const hytaleBackupsDir = resolveFromCwd(Bun.env.HYTALE_SERVER_BACKUPS_DIR ?? path.join(serverDir, "backups"));
 const uploadsDir = resolveFromCwd(Bun.env.UPLOADS_DIR ?? path.join(dataDir, "uploads"));
 const toolsDir = resolveFromCwd(Bun.env.TOOLS_DIR ?? path.join(dataDir, "tools"));
 const publicHost = host === "0.0.0.0" || host === "::" ? "localhost" : host;
@@ -63,6 +64,7 @@ export const config = {
   },
   hytale: {
     serverDir,
+    backupsDir: hytaleBackupsDir,
     managedJavaDir: resolveFromCwd(Bun.env.HYTALE_MANAGED_JAVA_DIR ?? path.join(toolsDir, "temurin-jdk-25")),
     downloadCacheDir: resolveFromCwd(Bun.env.HYTALE_DOWNLOAD_CACHE_DIR ?? path.join(toolsDir, "download-cache")),
     curseForgeStatePath: resolveFromCwd(Bun.env.HYTALE_CURSEFORGE_STATE_PATH ?? path.join(dataDir, "curseforge-mods.json")),
@@ -107,6 +109,8 @@ export const config = {
     startupTimeoutMs: Number(Bun.env.HYTALE_STARTUP_TIMEOUT_MS ?? 120_000),
     shutdownTimeoutMs: Number(Bun.env.HYTALE_SHUTDOWN_TIMEOUT_MS ?? 15_000),
     terminalBufferLines: Number(Bun.env.TERMINAL_BUFFER_LINES ?? 4_000),
+    metricsSampleIntervalMs: Number(Bun.env.HYTALE_METRICS_SAMPLE_INTERVAL_MS ?? 2_000),
+    metricsHistoryPoints: Number(Bun.env.HYTALE_METRICS_HISTORY_POINTS ?? 300),
   },
   smtp: smtp as SmtpConfig | null,
 } as const;
@@ -122,6 +126,7 @@ export function ensureDirectories(): void {
   mkdirSync(path.dirname(config.hytale.nexusStatePath), { recursive: true });
   mkdirSync(path.dirname(config.hytale.downloaderCredentialsPath), { recursive: true });
   mkdirSync(config.hytale.serverDir, { recursive: true });
+  mkdirSync(config.hytale.backupsDir, { recursive: true });
   mkdirSync(path.join(config.hytale.serverDir, "mods"), { recursive: true });
   mkdirSync(path.join(config.hytale.serverDir, "logs"), { recursive: true });
 }

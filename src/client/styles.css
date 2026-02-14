@@ -124,4 +124,13 @@
     body {
         @apply bg-background text-foreground;
     }
+
+    button,
+    [type="button"],
+    [type="submit"],
+    [type="reset"],
+    [role="button"],
+    [role="link"] {
+        @apply cursor-pointer;
+    }
 }

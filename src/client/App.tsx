@@ -17,37 +17,30 @@ import {
 } from "./components/ui/card";
 import { Input } from "./components/ui/input";
 import { Label } from "./components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "./components/ui/select";
 import { Separator } from "./components/ui/separator";
 import {
   BackupEntry,
   BootstrapPayload,
-  CurseForgeInstalledMod,
-  CurseForgeSearchMod,
-  CurseForgeSearchResult,
-  CurseForgeSearchSort,
   InviteSummary,
   LogFileSummary,
   ModEntry,
-  NexusInstalledMod,
-  NexusSearchMod,
-  NexusSearchResult,
-  NexusSearchSort,
+  ServerMetricPoint,
   ServerState,
   User,
 } from "./types";
 import { DashboardSocket } from "./ws";
+import {
+  CartesianGrid,
+  Line,
+  LineChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 
 const TERMINAL_LIMIT = 4_000;
 const LONG_OPERATION_TIMEOUT_MS = 20 * 60 * 1000;
-const CURSEFORGE_PAGE_SIZE = 20;
-const NEXUS_PAGE_SIZE = 20;
 
 function formatDate(value: string | null): string {
   if (!value) {
@@ -67,6 +60,82 @@ function formatBytes(size: number): string {
   }
 
   return `${value.toFixed(unit === 0 ? 0 : 1)} ${units[unit]}`;
+}
+
+function formatRate(bytesPerSecond: number | null): string {
+  if (bytesPerSecond === null || !Number.isFinite(bytesPerSecond)) {
+    return "-";
+  }
+  return `${formatBytes(Math.max(0, bytesPerSecond))}/s`;
+}
+
+function normalizePluginKey(value: string): string | null {
+  const normalized = value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
+  return normalized.length > 0 ? normalized : null;
+}
+
+function stripModArtifactExtensions(filename: string): string {
+  let baseName = filename.trim();
+  if (baseName.toLowerCase().endsWith(".disabled")) {
+    baseName = baseName.slice(0, -".disabled".length);
+  }
+  if (baseName.toLowerCase().endsWith(".jar")) {
+    return baseName.slice(0, -".jar".length);
+  }
+  if (baseName.toLowerCase().endsWith(".zip")) {
+    return baseName.slice(0, -".zip".length);
+  }
+  return baseName;
+}
+
+function parsePluginKeyFromFilename(filename: string): string | null {
+  const baseName = stripModArtifactExtensions(filename);
+  if (!baseName) {
+    return null;
+  }
+
+  const underscoreMatch = /^(.+?)_([0-9][a-zA-Z0-9._-]*)$/.exec(baseName);
+  if (underscoreMatch) {
+    return normalizePluginKey(underscoreMatch[1] ?? baseName);
+  }
+
+  const parts = baseName.split("-");
+  let versionIndex = -1;
+  for (let index = 1; index < parts.length; index += 1) {
+    if (/^[0-9]/.test(parts[index] ?? "")) {
+      versionIndex = index;
+      break;
+    }
+  }
+
+  if (versionIndex > 0) {
+    return normalizePluginKey(parts.slice(0, versionIndex).join("-"));
+  }
+
+  return normalizePluginKey(baseName);
+}
+
+function pluginKeyFromModEntry(mod: ModEntry): string | null {
+  return normalizePluginKey(mod.pluginName) ?? parsePluginKeyFromFilename(mod.filename);
+}
+
+function isTopLevelFolderFile(file: File): boolean {
+  const relativePath = (file as File & { webkitRelativePath?: string })
+    .webkitRelativePath;
+  if (!relativePath) {
+    return true;
+  }
+
+  const segments = relativePath
+    .replace(/\\/g, "/")
+    .split("/")
+    .filter((segment) => segment.length > 0);
+
+  return segments.length === 2;
+}
+
+function isModArchiveFilename(filename: string): boolean {
+  return /\.(jar|zip)$/i.test(filename);
 }
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
@@ -109,41 +178,10 @@ export function App() {
 
   const [serverState, setServerState] = useState<ServerState | null>(null);
   const [terminalLines, setTerminalLines] = useState<string[]>([]);
+  const [terminalScrollLock, setTerminalScrollLock] = useState(false);
   const [commandInput, setCommandInput] = useState("");
 
   const [mods, setMods] = useState<ModEntry[]>([]);
-  const [curseForgeInstalled, setCurseForgeInstalled] = useState<
-    CurseForgeInstalledMod[]
-  >([]);
-  const [curseForgeResults, setCurseForgeResults] = useState<
-    CurseForgeSearchMod[]
-  >([]);
-  const [curseForgeQuery, setCurseForgeQuery] = useState("");
-  const [curseForgeSort, setCurseForgeSort] =
-    useState<CurseForgeSearchSort>("popularity");
-  const [curseForgePage, setCurseForgePage] = useState(1);
-  const [curseForgeTotalCount, setCurseForgeTotalCount] = useState(0);
-  const [curseForgeSearching, setCurseForgeSearching] = useState(false);
-  const [curseForgeWorking, setCurseForgeWorking] = useState(false);
-  const [curseForgeSetupApiKey, setCurseForgeSetupApiKey] = useState("");
-  const [curseForgeSetupGameId, setCurseForgeSetupGameId] = useState("70216");
-  const [curseForgeSetupClassId, setCurseForgeSetupClassId] = useState("");
-  const [nexusInstalled, setNexusInstalled] = useState<NexusInstalledMod[]>([]);
-  const [nexusResults, setNexusResults] = useState<NexusSearchMod[]>([]);
-  const [nexusQuery, setNexusQuery] = useState("");
-  const [nexusSort, setNexusSort] = useState<NexusSearchSort>("popularity");
-  const [nexusPage, setNexusPage] = useState(1);
-  const [nexusTotalCount, setNexusTotalCount] = useState(0);
-  const [nexusSearching, setNexusSearching] = useState(false);
-  const [nexusWorking, setNexusWorking] = useState(false);
-  const [nexusConnectingSso, setNexusConnectingSso] = useState(false);
-  const [nexusManualApiKey, setNexusManualApiKey] = useState("");
-  const [nexusGameDomain, setNexusGameDomain] = useState("hytale");
-  const nexusSsoRef = useRef<{
-    socket: WebSocket | null;
-    pingTimer: number | null;
-    closed: boolean;
-  } | null>(null);
   const [backups, setBackups] = useState<BackupEntry[]>([]);
   const [logs, setLogs] = useState<LogFileSummary[]>([]);
   const [selectedLog, setSelectedLog] = useState<string>("__terminal__");
@@ -167,6 +205,14 @@ export function App() {
 
   const [inviteEmail, setInviteEmail] = useState("");
   const [backupNote, setBackupNote] = useState("");
+  const [bindPortInput, setBindPortInput] = useState("25565");
+  const [autoBackupEnabledInput, setAutoBackupEnabledInput] = useState(true);
+  const [backupFrequencyMinutesInput, setBackupFrequencyMinutesInput] =
+    useState("30");
+  const [backupMaxCountInput, setBackupMaxCountInput] = useState("12");
+  const [javaMinHeapInput, setJavaMinHeapInput] = useState("2048");
+  const [javaMaxHeapInput, setJavaMaxHeapInput] = useState("4096");
+  const [javaExtraArgsInput, setJavaExtraArgsInput] = useState("");
 
   const inviteToken = useMemo(() => {
     const query = new URLSearchParams(location.search);
@@ -193,17 +239,60 @@ export function App() {
     serverState.status !== "starting" &&
     serverState.status !== "stopping";
   const downloadsLocked = busy || serverState?.status === "installing";
-  const curseForgeConfigured = !!serverState?.curseForgeConfigured;
-  const curseForgeHasNextPage =
-    curseForgePage * CURSEFORGE_PAGE_SIZE < curseForgeTotalCount;
-  const curseForgeUpdateCount = curseForgeInstalled.filter(
-    (item) => item.updateAvailable,
-  ).length;
-  const nexusConfigured = !!serverState?.nexusConfigured;
-  const nexusHasNextPage = nexusPage * NEXUS_PAGE_SIZE < nexusTotalCount;
-  const nexusUpdateCount = nexusInstalled.filter(
-    (item) => item.updateAvailable,
-  ).length;
+  const metrics = serverState?.metrics ?? [];
+
+  const metricsChartData = useMemo(() => {
+    return metrics.map((point) => ({
+      ...point,
+      time: new Date(point.timestamp).toLocaleTimeString([], {
+        hour12: false,
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      }),
+      rssMiB: point.rssBytes / (1024 * 1024),
+      virtualMemoryMiB: point.virtualMemoryBytes / (1024 * 1024),
+      rxKiBps:
+        point.networkRxBytesPerSec === null
+          ? null
+          : point.networkRxBytesPerSec / 1024,
+      txKiBps:
+        point.networkTxBytesPerSec === null
+          ? null
+          : point.networkTxBytesPerSec / 1024,
+    }));
+  }, [metrics]);
+
+  const metricsSummary = useMemo(() => {
+    if (metrics.length === 0) {
+      return null;
+    }
+
+    const latest = metrics[metrics.length - 1] ?? null;
+    if (!latest) {
+      return null;
+    }
+
+    let cpuPeak = latest.cpuPercent;
+    let rssPeak = latest.rssBytes;
+    let rxPeak = latest.networkRxBytesPerSec ?? 0;
+    let txPeak = latest.networkTxBytesPerSec ?? 0;
+
+    for (const point of metrics) {
+      cpuPeak = Math.max(cpuPeak, point.cpuPercent);
+      rssPeak = Math.max(rssPeak, point.rssBytes);
+      rxPeak = Math.max(rxPeak, point.networkRxBytesPerSec ?? 0);
+      txPeak = Math.max(txPeak, point.networkTxBytesPerSec ?? 0);
+    }
+
+    return {
+      latest,
+      cpuPeak,
+      rssPeak,
+      rxPeak,
+      txPeak,
+    };
+  }, [metrics]);
 
   useEffect(() => {
     const unsubscribeEvents = socket.onEvent((event, payload) => {
@@ -213,9 +302,6 @@ export function App() {
         setServerState(data.serverState);
         setTerminalLines(data.serverState.terminal ?? []);
         setMods(data.mods);
-        setCurseForgeInstalled(data.curseForgeInstalled ?? []);
-        setNexusInstalled(data.nexusInstalled ?? []);
-        setNexusGameDomain(data.serverState.nexusGameDomain ?? "hytale");
         setBackups(data.backups);
         setLogs(data.logs);
         setInvites(data.invites);
@@ -235,6 +321,31 @@ export function App() {
             return next.slice(next.length - TERMINAL_LIMIT);
           }
           return next;
+        });
+        return;
+      }
+
+      if (event === "server.metrics") {
+        const point = (payload as { point?: ServerMetricPoint }).point;
+        if (!point) {
+          return;
+        }
+
+        setServerState((prev) => {
+          if (!prev) {
+            return null;
+          }
+
+          const nextMetrics = [...(prev.metrics ?? []), point];
+          const limit = Math.max(10, prev.metricsHistoryLimit || 300);
+          if (nextMetrics.length > limit) {
+            nextMetrics.splice(0, nextMetrics.length - limit);
+          }
+
+          return {
+            ...prev,
+            metrics: nextMetrics,
+          };
         });
         return;
       }
@@ -297,15 +408,6 @@ export function App() {
     return () => {
       unsubscribeEvents();
       unsubscribeConnection();
-      const sso = nexusSsoRef.current;
-      if (sso?.pingTimer) {
-        window.clearInterval(sso.pingTimer);
-      }
-      if (sso?.socket && !sso.closed) {
-        sso.closed = true;
-        sso.socket.close();
-      }
-      nexusSsoRef.current = null;
       socket.disconnect();
     };
   }, [socket]);
@@ -370,12 +472,30 @@ export function App() {
 
   useEffect(() => {
     const terminal = terminalRef.current;
-    if (!terminal || !shouldFollowTerminalRef.current) {
+    if (!terminal) {
+      return;
+    }
+
+    if (!terminalScrollLock && !shouldFollowTerminalRef.current) {
       return;
     }
 
     terminal.scrollTop = terminal.scrollHeight;
-  }, [terminalLines]);
+  }, [terminalLines, terminalScrollLock]);
+
+  useEffect(() => {
+    if (!terminalScrollLock) {
+      return;
+    }
+
+    shouldFollowTerminalRef.current = true;
+    const terminal = terminalRef.current;
+    if (!terminal) {
+      return;
+    }
+
+    terminal.scrollTop = terminal.scrollHeight;
+  }, [terminalScrollLock]);
 
   useEffect(() => {
     if (!user || !connected) {
@@ -422,60 +542,38 @@ export function App() {
   }, [socket, user, connected, serverState?.status]);
 
   useEffect(() => {
-    if (!user || !connected || !curseForgeConfigured) {
-      return;
-    }
-
-    if (curseForgeResults.length > 0) {
-      return;
-    }
-
-    void searchCurseForge(1);
-  }, [
-    user,
-    connected,
-    curseForgeConfigured,
-    curseForgeResults.length,
-    curseForgeSort,
-  ]);
-
-  useEffect(() => {
-    if (!user || !connected || !nexusConfigured) {
-      return;
-    }
-
-    if (nexusResults.length > 0) {
-      return;
-    }
-
-    void searchNexusMods(1);
-  }, [user, connected, nexusConfigured, nexusResults.length, nexusSort]);
-
-  useEffect(() => {
     if (!serverState) {
       return;
     }
 
-    if (serverState.curseForgeGameId && !curseForgeSetupGameId) {
-      setCurseForgeSetupGameId(String(serverState.curseForgeGameId));
+    if (serverState.bindPort) {
+      setBindPortInput(String(serverState.bindPort));
     }
 
-    if (serverState.curseForgeClassId !== null && !curseForgeSetupClassId) {
-      setCurseForgeSetupClassId(String(serverState.curseForgeClassId));
-    }
-
-    if (serverState.nexusGameDomain) {
-      setNexusGameDomain(serverState.nexusGameDomain);
-    }
+    setAutoBackupEnabledInput(serverState.autoBackupEnabled);
+    setBackupFrequencyMinutesInput(String(serverState.backupFrequencyMinutes));
+    setBackupMaxCountInput(String(serverState.backupMaxCount));
+    setJavaMinHeapInput(String(serverState.javaMinHeapMb));
+    setJavaMaxHeapInput(String(serverState.javaMaxHeapMb));
+    setJavaExtraArgsInput(serverState.javaExtraArgs ?? "");
   }, [
-    serverState,
-    curseForgeSetupGameId,
-    curseForgeSetupClassId,
-    nexusGameDomain,
+    serverState?.bindPort,
+    serverState?.autoBackupEnabled,
+    serverState?.backupFrequencyMinutes,
+    serverState?.backupMaxCount,
+    serverState?.javaMinHeapMb,
+    serverState?.javaMaxHeapMb,
+    serverState?.javaExtraArgs,
   ]);
 
   function handleTerminalScroll(event: UIEvent<HTMLPreElement>) {
     const element = event.currentTarget;
+    if (terminalScrollLock) {
+      shouldFollowTerminalRef.current = true;
+      element.scrollTop = element.scrollHeight;
+      return;
+    }
+
     const delta =
       element.scrollHeight - element.scrollTop - element.clientHeight;
     shouldFollowTerminalRef.current = delta <= 12;
@@ -503,536 +601,6 @@ export function App() {
   async function refreshMods(): Promise<void> {
     const items = await request<ModEntry[]>("mods.list");
     setMods(items);
-  }
-
-  async function searchCurseForge(
-    page = 1,
-    overrides?: { query?: string; sort?: CurseForgeSearchSort },
-  ): Promise<void> {
-    if (!curseForgeConfigured) {
-      return;
-    }
-
-    const query = (overrides?.query ?? curseForgeQuery).trim();
-    const sort = overrides?.sort ?? curseForgeSort;
-
-    setCurseForgeSearching(true);
-    setError("");
-
-    try {
-      const result = await request<CurseForgeSearchResult>(
-        "curseforge.search",
-        {
-          query,
-          sort,
-          page,
-          pageSize: CURSEFORGE_PAGE_SIZE,
-        },
-      );
-      setCurseForgeResults(result.mods);
-      setCurseForgePage(result.page);
-      setCurseForgeTotalCount(result.totalCount);
-    } catch (searchError) {
-      setError((searchError as Error).message);
-    } finally {
-      setCurseForgeSearching(false);
-    }
-  }
-
-  async function connectCurseForge(event: FormEvent): Promise<void> {
-    event.preventDefault();
-
-    if (user?.role !== "owner") {
-      setError("Only the owner can configure CurseForge credentials.");
-      return;
-    }
-
-    const apiKey = curseForgeSetupApiKey.trim();
-    const gameIdInput = curseForgeSetupGameId.trim();
-    const gameId = Number(
-      gameIdInput || serverState?.curseForgeGameId || 70216,
-    );
-    const classIdRaw = curseForgeSetupClassId.trim();
-    const classId = classIdRaw ? Number(classIdRaw) : 0;
-
-    if (!apiKey) {
-      setError("CurseForge API key is required.");
-      return;
-    }
-    if (!Number.isFinite(gameId) || gameId <= 0) {
-      setError("CurseForge game ID must be a positive integer.");
-      return;
-    }
-    if (!Number.isFinite(classId) || classId < 0) {
-      setError("CurseForge class ID must be zero or a positive integer.");
-      return;
-    }
-
-    setCurseForgeWorking(true);
-    setError("");
-
-    try {
-      const response = await request<{
-        configured: boolean;
-        gameId: number;
-        classId: number;
-        serverState: ServerState;
-      }>("curseforge.connect", {
-        apiKey,
-        gameId,
-        classId,
-      });
-
-      setServerState(response.serverState);
-      setCurseForgeSetupApiKey("");
-      setCurseForgeSetupGameId(String(response.gameId));
-      setCurseForgeSetupClassId(String(response.classId));
-      setStatus("CurseForge connected successfully.");
-
-      const [installed, search] = await Promise.all([
-        request<CurseForgeInstalledMod[]>("curseforge.installed", {
-          checkUpdates: false,
-        }),
-        request<CurseForgeSearchResult>("curseforge.search", {
-          query: "",
-          sort: "popularity",
-          page: 1,
-          pageSize: CURSEFORGE_PAGE_SIZE,
-        }),
-      ]);
-      setCurseForgeInstalled(installed);
-      setCurseForgeResults(search.mods);
-      setCurseForgePage(search.page);
-      setCurseForgeTotalCount(search.totalCount);
-    } catch (connectError) {
-      setError((connectError as Error).message);
-    } finally {
-      setCurseForgeWorking(false);
-    }
-  }
-
-  async function refreshCurseForgeInstalled(
-    checkUpdates: boolean,
-  ): Promise<void> {
-    if (!curseForgeConfigured) {
-      return;
-    }
-
-    setCurseForgeWorking(true);
-    setError("");
-
-    try {
-      const installed = await request<CurseForgeInstalledMod[]>(
-        checkUpdates ? "curseforge.checkUpdates" : "curseforge.installed",
-        checkUpdates ? undefined : { checkUpdates: false },
-      );
-      setCurseForgeInstalled(installed);
-      if (checkUpdates) {
-        setStatus("CurseForge updates checked.");
-      }
-    } catch (checkError) {
-      setError((checkError as Error).message);
-    } finally {
-      setCurseForgeWorking(false);
-    }
-  }
-
-  async function installCurseForgeMod(modId: number): Promise<void> {
-    if (!curseForgeConfigured) {
-      return;
-    }
-
-    setCurseForgeWorking(true);
-    setError("");
-
-    try {
-      const result = await request<{
-        installedMod: CurseForgeInstalledMod | null;
-        mods: ModEntry[];
-        installed: CurseForgeInstalledMod[];
-        alreadyInstalled: boolean;
-      }>("curseforge.install", { modId }, LONG_OPERATION_TIMEOUT_MS);
-
-      setMods(result.mods);
-      setCurseForgeInstalled(result.installed);
-      setStatus(
-        result.alreadyInstalled
-          ? "Mod is already installed."
-          : "CurseForge mod installed.",
-      );
-    } catch (installError) {
-      setError((installError as Error).message);
-    } finally {
-      setCurseForgeWorking(false);
-    }
-  }
-
-  async function updateCurseForgeMod(modId: number): Promise<void> {
-    if (!curseForgeConfigured) {
-      return;
-    }
-
-    setCurseForgeWorking(true);
-    setError("");
-
-    try {
-      const result = await request<{
-        updated: boolean;
-        installedMod: CurseForgeInstalledMod | null;
-        installed: CurseForgeInstalledMod[];
-        mods: ModEntry[];
-      }>("curseforge.update", { modId }, LONG_OPERATION_TIMEOUT_MS);
-      setMods(result.mods);
-      setCurseForgeInstalled(result.installed);
-      setStatus(
-        result.updated
-          ? "CurseForge mod updated."
-          : "Mod is already up to date.",
-      );
-    } catch (updateError) {
-      setError((updateError as Error).message);
-    } finally {
-      setCurseForgeWorking(false);
-    }
-  }
-
-  async function updateAllCurseForgeMods(): Promise<void> {
-    if (!curseForgeConfigured) {
-      return;
-    }
-
-    setCurseForgeWorking(true);
-    setError("");
-
-    try {
-      const result = await request<{
-        updated: number;
-        skipped: number;
-        installed: CurseForgeInstalledMod[];
-        mods: ModEntry[];
-      }>("curseforge.updateAll", undefined, LONG_OPERATION_TIMEOUT_MS);
-      setMods(result.mods);
-      setCurseForgeInstalled(result.installed);
-      setStatus(
-        `CurseForge update complete. Updated: ${result.updated}, skipped: ${result.skipped}.`,
-      );
-    } catch (updateError) {
-      setError((updateError as Error).message);
-    } finally {
-      setCurseForgeWorking(false);
-    }
-  }
-
-  function cleanupNexusSsoSession(): void {
-    const current = nexusSsoRef.current;
-    if (!current) {
-      return;
-    }
-
-    if (current.pingTimer) {
-      window.clearInterval(current.pingTimer);
-    }
-    if (current.socket && !current.closed) {
-      current.closed = true;
-      current.socket.close();
-    }
-    nexusSsoRef.current = null;
-  }
-
-  async function searchNexusMods(
-    page = 1,
-    overrides?: { query?: string; sort?: NexusSearchSort },
-  ): Promise<void> {
-    if (!nexusConfigured) {
-      return;
-    }
-
-    const query = (overrides?.query ?? nexusQuery).trim();
-    const sort = overrides?.sort ?? nexusSort;
-
-    setNexusSearching(true);
-    setError("");
-
-    try {
-      const result = await request<NexusSearchResult>("nexus.search", {
-        query,
-        sort,
-        page,
-        pageSize: NEXUS_PAGE_SIZE,
-      });
-      setNexusResults(result.mods);
-      setNexusPage(result.page);
-      setNexusTotalCount(result.totalCount);
-    } catch (searchError) {
-      setError((searchError as Error).message);
-    } finally {
-      setNexusSearching(false);
-    }
-  }
-
-  async function refreshNexusInstalled(checkUpdates: boolean): Promise<void> {
-    if (!nexusConfigured) {
-      return;
-    }
-
-    setNexusWorking(true);
-    setError("");
-
-    try {
-      const installed = await request<NexusInstalledMod[]>(
-        checkUpdates ? "nexus.checkUpdates" : "nexus.installed",
-        checkUpdates ? undefined : { checkUpdates: false },
-      );
-      setNexusInstalled(installed);
-      if (checkUpdates) {
-        setStatus("Nexus updates checked.");
-      }
-    } catch (refreshError) {
-      setError((refreshError as Error).message);
-    } finally {
-      setNexusWorking(false);
-    }
-  }
-
-  async function connectNexusWithKey(apiKey: string): Promise<void> {
-    setNexusWorking(true);
-    setError("");
-
-    try {
-      const result = await request<{
-        configured: boolean;
-        gameDomain: string;
-        premium: boolean;
-        userName: string;
-        serverState: ServerState;
-        installed: NexusInstalledMod[];
-      }>("nexus.connect", {
-        apiKey,
-        gameDomain: nexusGameDomain.trim() || "hytale",
-      });
-
-      setServerState(result.serverState);
-      setNexusInstalled(result.installed);
-      setNexusGameDomain(result.gameDomain);
-      setNexusManualApiKey("");
-      setStatus(
-        `Nexus connected as ${result.userName}${result.premium ? " (Premium)" : ""}.`,
-      );
-
-      const search = await request<NexusSearchResult>("nexus.search", {
-        query: "",
-        sort: "popularity",
-        page: 1,
-        pageSize: NEXUS_PAGE_SIZE,
-      });
-      setNexusResults(search.mods);
-      setNexusPage(search.page);
-      setNexusTotalCount(search.totalCount);
-    } catch (connectError) {
-      setError((connectError as Error).message);
-    } finally {
-      setNexusWorking(false);
-    }
-  }
-
-  async function connectNexusManual(event: FormEvent): Promise<void> {
-    event.preventDefault();
-    const apiKey = nexusManualApiKey.trim();
-    if (!apiKey) {
-      setError("Nexus API key is required.");
-      return;
-    }
-    await connectNexusWithKey(apiKey);
-  }
-
-  async function startNexusSso(): Promise<void> {
-    if (!serverState?.nexusSsoReady) {
-      setError(
-        "Nexus SSO is not configured on the server. Set HYTALE_NEXUS_APP_ID.",
-      );
-      return;
-    }
-
-    cleanupNexusSsoSession();
-    setNexusConnectingSso(true);
-    setError("");
-
-    try {
-      const challenge = await request<{
-        id: string;
-        appId: string;
-        url: string;
-        wsUrl: string;
-      }>("nexus.sso.start");
-      const ws = new WebSocket(challenge.wsUrl);
-      const session = {
-        socket: ws,
-        pingTimer: null as number | null,
-        closed: false,
-      };
-      nexusSsoRef.current = session;
-
-      ws.addEventListener("open", () => {
-        ws.send(JSON.stringify({ id: challenge.id, appid: challenge.appId }));
-        session.pingTimer = window.setInterval(() => {
-          try {
-            ws.send("ping");
-          } catch {
-            // ignore
-          }
-        }, 25_000);
-
-        const opened = window.open(
-          challenge.url,
-          "_blank",
-          "noopener,noreferrer",
-        );
-        if (!opened) {
-          setStatus(`Open Nexus SSO URL manually: ${challenge.url}`);
-        } else {
-          setStatus("Nexus SSO opened in a new tab. Authorize to continue.");
-        }
-      });
-
-      ws.addEventListener("message", (event) => {
-        const raw = typeof event.data === "string" ? event.data.trim() : "";
-        if (!raw) {
-          return;
-        }
-
-        let parsed: unknown = null;
-        try {
-          parsed = JSON.parse(raw);
-        } catch {
-          parsed = null;
-        }
-
-        if (parsed && typeof parsed === "object") {
-          const errorLike = parsed as { error?: unknown; message?: unknown };
-          const message =
-            typeof errorLike.error === "string"
-              ? errorLike.error
-              : typeof errorLike.message === "string"
-                ? errorLike.message
-                : "";
-          if (message) {
-            setError(`Nexus SSO failed: ${message}`);
-            cleanupNexusSsoSession();
-            setNexusConnectingSso(false);
-            return;
-          }
-        }
-
-        if (raw.startsWith("{") || raw.startsWith("[")) {
-          return;
-        }
-
-        void connectNexusWithKey(raw).finally(() => {
-          cleanupNexusSsoSession();
-          setNexusConnectingSso(false);
-        });
-      });
-
-      ws.addEventListener("error", () => {
-        setError("Nexus SSO websocket connection failed.");
-        cleanupNexusSsoSession();
-        setNexusConnectingSso(false);
-      });
-
-      ws.addEventListener("close", () => {
-        cleanupNexusSsoSession();
-        setNexusConnectingSso(false);
-      });
-    } catch (ssoError) {
-      setError((ssoError as Error).message);
-      cleanupNexusSsoSession();
-      setNexusConnectingSso(false);
-    }
-  }
-
-  async function installNexusMod(modId: number): Promise<void> {
-    if (!nexusConfigured) {
-      return;
-    }
-
-    setNexusWorking(true);
-    setError("");
-
-    try {
-      const result = await request<{
-        installedMod: NexusInstalledMod | null;
-        mods: ModEntry[];
-        installed: NexusInstalledMod[];
-        alreadyInstalled: boolean;
-      }>("nexus.install", { modId }, LONG_OPERATION_TIMEOUT_MS);
-      setMods(result.mods);
-      setNexusInstalled(result.installed);
-      setStatus(
-        result.alreadyInstalled
-          ? "Nexus mod is already installed."
-          : "Nexus mod installed.",
-      );
-    } catch (installError) {
-      setError((installError as Error).message);
-    } finally {
-      setNexusWorking(false);
-    }
-  }
-
-  async function updateNexusMod(modId: number): Promise<void> {
-    if (!nexusConfigured) {
-      return;
-    }
-
-    setNexusWorking(true);
-    setError("");
-
-    try {
-      const result = await request<{
-        updated: boolean;
-        installedMod: NexusInstalledMod | null;
-        installed: NexusInstalledMod[];
-        mods: ModEntry[];
-      }>("nexus.update", { modId }, LONG_OPERATION_TIMEOUT_MS);
-      setMods(result.mods);
-      setNexusInstalled(result.installed);
-      setStatus(
-        result.updated
-          ? "Nexus mod updated."
-          : "Nexus mod is already up to date.",
-      );
-    } catch (updateError) {
-      setError((updateError as Error).message);
-    } finally {
-      setNexusWorking(false);
-    }
-  }
-
-  async function updateAllNexusMods(): Promise<void> {
-    if (!nexusConfigured) {
-      return;
-    }
-
-    setNexusWorking(true);
-    setError("");
-
-    try {
-      const result = await request<{
-        updated: number;
-        skipped: number;
-        installed: NexusInstalledMod[];
-        mods: ModEntry[];
-      }>("nexus.updateAll", undefined, LONG_OPERATION_TIMEOUT_MS);
-      setMods(result.mods);
-      setNexusInstalled(result.installed);
-      setStatus(
-        `Nexus update complete. Updated: ${result.updated}, skipped: ${result.skipped}.`,
-      );
-    } catch (updateError) {
-      setError((updateError as Error).message);
-    } finally {
-      setNexusWorking(false);
-    }
   }
 
   async function handleLogin(event: FormEvent) {
@@ -1125,21 +693,11 @@ export function App() {
         method: "POST",
       });
 
-      cleanupNexusSsoSession();
       socket.disconnect();
       setUser(null);
       setServerState(null);
       setTerminalLines([]);
       setMods([]);
-      setCurseForgeInstalled([]);
-      setCurseForgeResults([]);
-      setCurseForgeTotalCount(0);
-      setCurseForgePage(1);
-      setNexusInstalled([]);
-      setNexusResults([]);
-      setNexusTotalCount(0);
-      setNexusPage(1);
-      setNexusConnectingSso(false);
       setBackups([]);
       setLogs([]);
       setInvites([]);
@@ -1219,6 +777,85 @@ export function App() {
     }
   }
 
+  async function saveRuntimeSettings(event: FormEvent) {
+    event.preventDefault();
+    if (user?.role !== "owner") {
+      setError("Only the owner can update server runtime settings.");
+      return;
+    }
+
+    const bindPort = Number(bindPortInput.trim());
+    const backupFrequencyMinutes = Number(backupFrequencyMinutesInput.trim());
+    const backupMaxCount = Number(backupMaxCountInput.trim());
+    const javaMinHeapMb = Number(javaMinHeapInput.trim());
+    const javaMaxHeapMb = Number(javaMaxHeapInput.trim());
+    const javaExtraArgs = javaExtraArgsInput.trim();
+
+    if (!Number.isInteger(bindPort) || bindPort < 1 || bindPort > 65535) {
+      setError("Server bind port must be an integer between 1 and 65535.");
+      return;
+    }
+
+    if (
+      !Number.isInteger(backupFrequencyMinutes) ||
+      backupFrequencyMinutes < 1 ||
+      backupFrequencyMinutes > 1440
+    ) {
+      setError("Backup frequency must be an integer between 1 and 1440.");
+      return;
+    }
+
+    if (!Number.isInteger(backupMaxCount) || backupMaxCount < 1) {
+      setError("Backup max count must be a positive integer.");
+      return;
+    }
+
+    if (!Number.isInteger(javaMinHeapMb) || javaMinHeapMb < 256) {
+      setError("Java min heap must be an integer of at least 256 MB.");
+      return;
+    }
+
+    if (!Number.isInteger(javaMaxHeapMb) || javaMaxHeapMb < 256) {
+      setError("Java max heap must be an integer of at least 256 MB.");
+      return;
+    }
+
+    if (javaMinHeapMb > javaMaxHeapMb) {
+      setError("Java min heap cannot be greater than Java max heap.");
+      return;
+    }
+
+    if (javaExtraArgs.length > 2000) {
+      setError("Extra JVM args are too long (maximum 2000 characters).");
+      return;
+    }
+
+    setBusy(true);
+    setError("");
+
+    try {
+      const snapshot = await request<ServerState>("server.runtime.update", {
+        bindPort,
+        autoBackupEnabled: autoBackupEnabledInput,
+        backupFrequencyMinutes,
+        backupMaxCount,
+        javaMinHeapMb,
+        javaMaxHeapMb,
+        javaExtraArgs,
+      });
+      setServerState(snapshot);
+      setStatus(
+        serverState?.status === "running"
+          ? "Runtime settings saved. Restart server to apply fully."
+          : "Runtime settings saved.",
+      );
+    } catch (settingsError) {
+      setError((settingsError as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function sendTerminalCommand(event: FormEvent) {
     event.preventDefault();
     const value = commandInput.trim();
@@ -1252,6 +889,32 @@ export function App() {
     }
   }
 
+  async function uploadModFile(file: File): Promise<ModEntry> {
+    const session = await request<{ uploadId: string }>("mod.upload.start", {
+      filename: file.name,
+      size: file.size,
+    });
+
+    const chunkSize = 128 * 1024;
+    for (let offset = 0; offset < file.size; offset += chunkSize) {
+      const chunk = file.slice(offset, offset + chunkSize);
+      const base64 = toBase64(await chunk.arrayBuffer());
+      await request("mod.upload.chunk", {
+        uploadId: session.uploadId,
+        chunk: base64,
+      });
+    }
+
+    const result = await request<{ mod: ModEntry; mods: ModEntry[] }>(
+      "mod.upload.finish",
+      {
+        uploadId: session.uploadId,
+      },
+    );
+
+    return result.mod;
+  }
+
   async function handleModUpload(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const input = event.currentTarget.elements.namedItem(
@@ -1268,27 +931,7 @@ export function App() {
 
     try {
       for (const file of files) {
-        const session = await request<{ uploadId: string }>(
-          "mod.upload.start",
-          {
-            filename: file.name,
-            size: file.size,
-          },
-        );
-
-        const chunkSize = 128 * 1024;
-        for (let offset = 0; offset < file.size; offset += chunkSize) {
-          const chunk = file.slice(offset, offset + chunkSize);
-          const base64 = toBase64(await chunk.arrayBuffer());
-          await request("mod.upload.chunk", {
-            uploadId: session.uploadId,
-            chunk: base64,
-          });
-        }
-
-        await request("mod.upload.finish", {
-          uploadId: session.uploadId,
-        });
+        await uploadModFile(file);
       }
 
       await refreshMods();
@@ -1298,6 +941,73 @@ export function App() {
       }
     } catch (uploadError) {
       setError((uploadError as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function handleModFolderSync(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const input = event.currentTarget.elements.namedItem(
+      "mod-sync-folder",
+    ) as HTMLInputElement | null;
+    const files = input?.files;
+    if (!files || files.length === 0) {
+      return;
+    }
+
+    const allFiles = Array.from(files);
+    const selected = allFiles
+      .filter((file) => isTopLevelFolderFile(file))
+      .filter((file) => isModArchiveFilename(file.name))
+      .sort((left, right) => left.name.localeCompare(right.name));
+
+    if (selected.length === 0) {
+      setError(
+        "Selected folder has no top-level .jar or .zip files. Subfolders are ignored.",
+      );
+      return;
+    }
+
+    const ignoredCount = allFiles.length - selected.length;
+
+    setBusy(true);
+    setError("");
+    setStatus(`Syncing folder (${selected.length} mods)...`);
+
+    try {
+      const uploadedPluginKeys = new Set<string>();
+      for (const file of selected) {
+        const mod = await uploadModFile(file);
+        const pluginKey = pluginKeyFromModEntry(mod);
+        if (pluginKey) {
+          uploadedPluginKeys.add(pluginKey);
+        }
+      }
+
+      const currentMods = await request<ModEntry[]>("mods.list");
+      let removed = 0;
+
+      for (const mod of currentMods) {
+        const pluginKey = pluginKeyFromModEntry(mod);
+        if (!pluginKey || uploadedPluginKeys.has(pluginKey)) {
+          continue;
+        }
+
+        await request<ModEntry[]>("mod.delete", { filename: mod.filename });
+        removed += 1;
+      }
+
+      const finalMods = await request<ModEntry[]>("mods.list");
+      setMods(finalMods);
+      setStatus(
+        `Folder sync complete. Added/updated: ${selected.length}, removed: ${removed}, ignored: ${ignoredCount}.`,
+      );
+      if (input) {
+        input.value = "";
+      }
+    } catch (syncError) {
+      setError((syncError as Error).message);
     } finally {
       setBusy(false);
     }
@@ -1644,6 +1354,10 @@ export function App() {
                 {!serverState?.javaInstalled && (
                   <p>Java runtime: Not installed</p>
                 )}
+                <p>
+                  Java heap: {serverState?.javaMinHeapMb ?? "-"} MB /{" "}
+                  {serverState?.javaMaxHeapMb ?? "-"} MB
+                </p>
                 <p>Installed version: {serverState?.installedVersion ?? "-"}</p>
                 <p>Latest version: {serverState?.latestVersion ?? "-"}</p>
                 {!serverState?.lifecycleReady && (
@@ -1657,6 +1371,131 @@ export function App() {
                 </p>
                 <p>Last start: {formatDate(serverState?.startedAt ?? null)}</p>
               </div>
+              {user.role === "owner" && (
+                <>
+                  <Separator />
+                  <form onSubmit={saveRuntimeSettings} className="space-y-3">
+                    <h3 className="text-sm font-semibold">Runtime settings</h3>
+                    <div className="space-y-2">
+                      <Label htmlFor="server-bind-port">Game port</Label>
+                      <Input
+                        id="server-bind-port"
+                        type="number"
+                        min={1}
+                        max={65535}
+                        step={1}
+                        value={bindPortInput}
+                        onChange={(event) => setBindPortInput(event.target.value)}
+                        placeholder="25565"
+                        disabled={busy}
+                      />
+                    </div>
+                    <label className="flex items-center justify-between gap-3 rounded-none border p-2 text-sm">
+                      <span>Enable automatic backups</span>
+                      <input
+                        type="checkbox"
+                        checked={autoBackupEnabledInput}
+                        onChange={(event) =>
+                          setAutoBackupEnabledInput(event.target.checked)
+                        }
+                        disabled={busy}
+                      />
+                    </label>
+                    <div className="space-y-2">
+                      <Label htmlFor="backup-frequency-minutes">
+                        Backup frequency (minutes)
+                      </Label>
+                      <Input
+                        id="backup-frequency-minutes"
+                        type="number"
+                        min={1}
+                        max={1440}
+                        step={1}
+                        value={backupFrequencyMinutesInput}
+                        onChange={(event) =>
+                          setBackupFrequencyMinutesInput(event.target.value)
+                        }
+                        disabled={busy || !autoBackupEnabledInput}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="backup-max-count">
+                        Active backup ZIP files to keep
+                      </Label>
+                      <Input
+                        id="backup-max-count"
+                        type="number"
+                        min={1}
+                        step={1}
+                        value={backupMaxCountInput}
+                        onChange={(event) =>
+                          setBackupMaxCountInput(event.target.value)
+                        }
+                        disabled={busy || !autoBackupEnabledInput}
+                      />
+                    </div>
+                    <Separator />
+                    <div className="space-y-2">
+                      <Label htmlFor="java-min-heap">Java min heap (MB)</Label>
+                      <Input
+                        id="java-min-heap"
+                        type="number"
+                        min={256}
+                        step={256}
+                        value={javaMinHeapInput}
+                        onChange={(event) =>
+                          setJavaMinHeapInput(event.target.value)
+                        }
+                        disabled={busy}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="java-max-heap">Java max heap (MB)</Label>
+                      <Input
+                        id="java-max-heap"
+                        type="number"
+                        min={256}
+                        step={256}
+                        value={javaMaxHeapInput}
+                        onChange={(event) =>
+                          setJavaMaxHeapInput(event.target.value)
+                        }
+                        disabled={busy}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="java-extra-args">
+                        Extra JVM args (optional)
+                      </Label>
+                      <Input
+                        id="java-extra-args"
+                        type="text"
+                        value={javaExtraArgsInput}
+                        onChange={(event) =>
+                          setJavaExtraArgsInput(event.target.value)
+                        }
+                        placeholder="-XX:+UseG1GC -XX:+HeapDumpOnOutOfMemoryError"
+                        disabled={busy}
+                      />
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Default profile follows Hytale guidance for at least 4 GB
+                      server memory and JVM sizing best practices:
+                      <span className="block">
+                        Min heap 2048 MB, max heap 4096 MB.
+                      </span>
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      Native backups are stored in {serverState?.backupDir ?? "-"}
+                      {". "}Older backups are moved to the archive folder by
+                      Hytale when max count is reached.
+                    </p>
+                    <Button type="submit" size="sm" disabled={busy}>
+                      Save runtime settings
+                    </Button>
+                  </form>
+                </>
+              )}
             </CardContent>
           </Card>
 
@@ -1679,13 +1518,203 @@ export function App() {
                   Send
                 </Button>
               </form>
-              <pre
-                ref={terminalRef}
-                onScroll={handleTerminalScroll}
-                className="h-90 overflow-auto rounded-none border bg-zinc-950 p-3 text-xs leading-relaxed text-zinc-100"
-              >
-                {terminalLines.join("\n")}
-              </pre>
+              <div className="group/terminal relative">
+                <pre
+                  ref={terminalRef}
+                  onScroll={handleTerminalScroll}
+                  className="h-90 overflow-auto rounded-none border bg-zinc-950 p-3 pr-24 text-xs leading-relaxed text-zinc-100"
+                >
+                  {terminalLines.join("\n")}
+                </pre>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant={terminalScrollLock ? "default" : "secondary"}
+                  className="pointer-events-none absolute right-2 bottom-2 opacity-0 transition-opacity group-hover/terminal:pointer-events-auto group-hover/terminal:opacity-100 group-focus-within/terminal:pointer-events-auto group-focus-within/terminal:opacity-100"
+                  onClick={() =>
+                    setTerminalScrollLock((current) => !current)
+                  }
+                >
+                  {terminalScrollLock
+                    ? "Auto-scroll locked"
+                    : "Lock auto-scroll"}
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card className="xl:col-span-12">
+            <CardHeader>
+              <CardTitle>Runtime Metrics</CardTitle>
+              <CardDescription>
+                Live server metrics sampled every{" "}
+                {Math.max(
+                  1,
+                  Math.round((serverState?.metricsSampleIntervalMs ?? 2000) / 1000),
+                )}
+                s while running.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {metricsSummary ? (
+                <div className="grid gap-3 md:grid-cols-5">
+                  <div className="rounded-none border p-3">
+                    <p className="text-xs text-muted-foreground">CPU now</p>
+                    <p className="text-lg font-semibold">
+                      {metricsSummary.latest.cpuPercent.toFixed(1)}%
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      Peak {metricsSummary.cpuPeak.toFixed(1)}%
+                    </p>
+                  </div>
+                  <div className="rounded-none border p-3">
+                    <p className="text-xs text-muted-foreground">Memory RSS</p>
+                    <p className="text-lg font-semibold">
+                      {formatBytes(metricsSummary.latest.rssBytes)}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      Peak {formatBytes(metricsSummary.rssPeak)}
+                    </p>
+                  </div>
+                  <div className="rounded-none border p-3">
+                    <p className="text-xs text-muted-foreground">Virtual memory</p>
+                    <p className="text-lg font-semibold">
+                      {formatBytes(metricsSummary.latest.virtualMemoryBytes)}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      Java process space
+                    </p>
+                  </div>
+                  <div className="rounded-none border p-3">
+                    <p className="text-xs text-muted-foreground">Network RX</p>
+                    <p className="text-lg font-semibold">
+                      {formatRate(metricsSummary.latest.networkRxBytesPerSec)}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      Peak {formatRate(metricsSummary.rxPeak)}
+                    </p>
+                  </div>
+                  <div className="rounded-none border p-3">
+                    <p className="text-xs text-muted-foreground">Network TX</p>
+                    <p className="text-lg font-semibold">
+                      {formatRate(metricsSummary.latest.networkTxBytesPerSec)}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      Peak {formatRate(metricsSummary.txPeak)}
+                    </p>
+                  </div>
+                </div>
+              ) : (
+                <p className="rounded-none border p-3 text-sm text-muted-foreground">
+                  Start the server to collect runtime metrics.
+                </p>
+              )}
+
+              {metricsChartData.length > 0 && (
+                <div className="grid gap-4 xl:grid-cols-2">
+                  <div className="h-56 rounded-none border p-2">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={metricsChartData}>
+                        <CartesianGrid strokeDasharray="3 3" />
+                        <XAxis dataKey="time" minTickGap={28} />
+                        <YAxis
+                          yAxisId="cpu"
+                          width={45}
+                          tickFormatter={(value) => `${Number(value).toFixed(0)}%`}
+                        />
+                        <YAxis
+                          yAxisId="mem"
+                          orientation="right"
+                          width={58}
+                          tickFormatter={(value) =>
+                            `${Number(value).toFixed(0)}M`
+                          }
+                        />
+                        <Tooltip
+                          formatter={(value: number, name: string) => {
+                            if (name === "cpuPercent") {
+                              return [`${Number(value).toFixed(1)}%`, "CPU"];
+                            }
+                            if (name === "rssMiB") {
+                              return [
+                                `${Number(value).toFixed(1)} MiB`,
+                                "RSS Memory",
+                              ];
+                            }
+                            return [value, name];
+                          }}
+                        />
+                        <Line
+                          yAxisId="cpu"
+                          type="monotone"
+                          dataKey="cpuPercent"
+                          stroke="#e11d48"
+                          strokeWidth={2}
+                          dot={false}
+                          name="cpuPercent"
+                        />
+                        <Line
+                          yAxisId="mem"
+                          type="monotone"
+                          dataKey="rssMiB"
+                          stroke="#0369a1"
+                          strokeWidth={2}
+                          dot={false}
+                          name="rssMiB"
+                        />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+
+                  <div className="h-56 rounded-none border p-2">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={metricsChartData}>
+                        <CartesianGrid strokeDasharray="3 3" />
+                        <XAxis dataKey="time" minTickGap={28} />
+                        <YAxis
+                          width={62}
+                          tickFormatter={(value) =>
+                            `${Number(value).toFixed(0)} KiB/s`
+                          }
+                        />
+                        <Tooltip
+                          formatter={(value: number, name: string) => {
+                            if (name === "rxKiBps") {
+                              return [
+                                `${Number(value).toFixed(1)} KiB/s`,
+                                "Network RX",
+                              ];
+                            }
+                            if (name === "txKiBps") {
+                              return [
+                                `${Number(value).toFixed(1)} KiB/s`,
+                                "Network TX",
+                              ];
+                            }
+                            return [value, name];
+                          }}
+                        />
+                        <Line
+                          type="monotone"
+                          dataKey="rxKiBps"
+                          stroke="#16a34a"
+                          strokeWidth={2}
+                          dot={false}
+                          name="rxKiBps"
+                        />
+                        <Line
+                          type="monotone"
+                          dataKey="txKiBps"
+                          stroke="#ca8a04"
+                          strokeWidth={2}
+                          dot={false}
+                          name="txKiBps"
+                        />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+              )}
             </CardContent>
           </Card>
 
@@ -1748,6 +1777,28 @@ export function App() {
                   Upload mods
                 </Button>
               </form>
+              <form
+                onSubmit={handleModFolderSync}
+                className="flex flex-wrap items-center gap-2"
+              >
+                <input
+                  type="file"
+                  name="mod-sync-folder"
+                  multiple
+                  {...({
+                    webkitdirectory: "",
+                    directory: "",
+                  } as Record<string, string>)}
+                  className="flex-1 border px-3 py-2 text-sm"
+                />
+                <Button type="submit" variant="secondary" disabled={busy}>
+                  Sync folder
+                </Button>
+              </form>
+              <p className="text-xs text-muted-foreground">
+                Folder sync uses only top-level <code>.jar</code>/<code>.zip</code>{" "}
+                files. Subfolders and other file types are ignored.
+              </p>
               <Button
                 size="sm"
                 variant="secondary"
@@ -1763,7 +1814,13 @@ export function App() {
                     className="flex items-center justify-between gap-3 rounded-none border p-3"
                   >
                     <div className="min-w-0">
-                      <p className="truncate font-medium">{mod.filename}</p>
+                      <p className="truncate font-medium">
+                        {mod.pluginName}
+                        {mod.pluginVersion ? ` v${mod.pluginVersion}` : ""}
+                      </p>
+                      <p className="truncate text-sm text-muted-foreground">
+                        {mod.filename}
+                      </p>
                       <p className="text-sm text-muted-foreground">
                         {formatBytes(mod.size)} |{" "}
                         {mod.disabled ? "Disabled" : "Enabled"}
@@ -1795,558 +1852,6 @@ export function App() {
 
           <Card className="xl:col-span-6">
             <CardHeader>
-              <CardTitle>CurseForge</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              {!curseForgeConfigured ? (
-                user.role === "owner" ? (
-                  <>
-                    <p className="text-sm text-muted-foreground">
-                      Connect once and credentials will be encrypted and saved
-                      in the app database.
-                    </p>
-                    <form
-                      onSubmit={(event) => void connectCurseForge(event)}
-                      className="grid gap-3 md:grid-cols-2"
-                    >
-                      <div className="space-y-2 md:col-span-2">
-                        <Label htmlFor="cf-key">API key</Label>
-                        <Input
-                          id="cf-key"
-                          type="password"
-                          value={curseForgeSetupApiKey}
-                          onChange={(event) =>
-                            setCurseForgeSetupApiKey(event.target.value)
-                          }
-                          placeholder="CurseForge API key"
-                        />
-                      </div>
-                      <div className="space-y-2">
-                        <Label htmlFor="cf-game-id">Game ID</Label>
-                        <Input
-                          id="cf-game-id"
-                          type="number"
-                          min={1}
-                          step={1}
-                          value={curseForgeSetupGameId}
-                          onChange={(event) =>
-                            setCurseForgeSetupGameId(event.target.value)
-                          }
-                          placeholder="70216 (Hytale)"
-                        />
-                      </div>
-                      <div className="space-y-2">
-                        <Label htmlFor="cf-class-id">Class ID (optional)</Label>
-                        <Input
-                          id="cf-class-id"
-                          type="number"
-                          min={0}
-                          step={1}
-                          value={curseForgeSetupClassId}
-                          onChange={(event) =>
-                            setCurseForgeSetupClassId(event.target.value)
-                          }
-                          placeholder="0 = all classes"
-                        />
-                      </div>
-                      <Button
-                        type="submit"
-                        disabled={curseForgeWorking}
-                        className="md:col-span-2"
-                      >
-                        {curseForgeWorking
-                          ? "Connecting..."
-                          : "Connect CurseForge"}
-                      </Button>
-                    </form>
-                  </>
-                ) : (
-                  <p className="text-sm text-muted-foreground">
-                    Owner needs to connect CurseForge before browsing and
-                    installing mods.
-                  </p>
-                )
-              ) : (
-                <>
-                  <p className="text-sm text-muted-foreground">
-                    Connected (
-                    {serverState?.curseForgeSource === "env"
-                      ? "environment variables"
-                      : "dashboard secure storage"}
-                    ) | gameId: {serverState?.curseForgeGameId ?? "-"} |
-                    classId: {serverState?.curseForgeClassId ?? 0}
-                  </p>
-                  <form
-                    onSubmit={(event) => {
-                      event.preventDefault();
-                      void searchCurseForge(1);
-                    }}
-                    className="grid gap-2 md:grid-cols-[1fr_200px_auto]"
-                  >
-                    <Input
-                      type="text"
-                      value={curseForgeQuery}
-                      onChange={(event) =>
-                        setCurseForgeQuery(event.target.value)
-                      }
-                      placeholder="Search by mod name or creator"
-                    />
-                    <Select
-                      value={curseForgeSort}
-                      onValueChange={(value) => {
-                        const nextSort = value as CurseForgeSearchSort;
-                        setCurseForgeSort(nextSort);
-                        setCurseForgePage(1);
-                        void searchCurseForge(1, { sort: nextSort });
-                      }}
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="Sort" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="popularity">Popularity</SelectItem>
-                        <SelectItem value="totalDownloads">
-                          Total downloads
-                        </SelectItem>
-                        <SelectItem value="lastUpdated">
-                          Last updated
-                        </SelectItem>
-                        <SelectItem value="name">Name</SelectItem>
-                        <SelectItem value="author">Author</SelectItem>
-                      </SelectContent>
-                    </Select>
-                    <Button
-                      type="submit"
-                      disabled={curseForgeSearching || curseForgeWorking}
-                    >
-                      {curseForgeSearching ? "Searching..." : "Search"}
-                    </Button>
-                  </form>
-
-                  <div className="flex flex-wrap gap-2">
-                    <Button
-                      size="sm"
-                      variant="secondary"
-                      onClick={() => void refreshCurseForgeInstalled(false)}
-                      disabled={curseForgeWorking}
-                    >
-                      Refresh installed
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => void refreshCurseForgeInstalled(true)}
-                      disabled={curseForgeWorking}
-                    >
-                      Check updates
-                    </Button>
-                    <Button
-                      size="sm"
-                      onClick={() => void updateAllCurseForgeMods()}
-                      disabled={
-                        curseForgeWorking || curseForgeInstalled.length === 0
-                      }
-                    >
-                      Update all ({curseForgeUpdateCount})
-                    </Button>
-                  </div>
-
-                  <ul className="max-h-64 space-y-2 overflow-auto">
-                    {curseForgeResults.map((mod) => (
-                      <li
-                        key={mod.id}
-                        className="flex items-start justify-between gap-3 rounded-none border p-3"
-                      >
-                        <div className="min-w-0">
-                          <p className="truncate font-medium">{mod.name}</p>
-                          <p className="text-sm text-muted-foreground">
-                            by {mod.authors.join(", ") || "Unknown"} |{" "}
-                            {Math.round(mod.downloadCount).toLocaleString()}{" "}
-                            downloads
-                          </p>
-                          {mod.summary && (
-                            <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">
-                              {mod.summary}
-                            </p>
-                          )}
-                        </div>
-                        <div className="flex shrink-0 gap-2">
-                          {mod.websiteUrl && (
-                            <Button size="sm" variant="outline" asChild>
-                              <a
-                                href={mod.websiteUrl}
-                                target="_blank"
-                                rel="noreferrer"
-                              >
-                                Open
-                              </a>
-                            </Button>
-                          )}
-                          <Button
-                            size="sm"
-                            onClick={() => void installCurseForgeMod(mod.id)}
-                            disabled={curseForgeWorking}
-                          >
-                            Install
-                          </Button>
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
-
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() =>
-                        void searchCurseForge(Math.max(1, curseForgePage - 1))
-                      }
-                      disabled={curseForgeSearching || curseForgePage <= 1}
-                    >
-                      Prev
-                    </Button>
-                    <p className="text-sm text-muted-foreground">
-                      Page {curseForgePage} /{" "}
-                      {Math.max(
-                        1,
-                        Math.ceil(curseForgeTotalCount / CURSEFORGE_PAGE_SIZE),
-                      )}
-                    </p>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => void searchCurseForge(curseForgePage + 1)}
-                      disabled={curseForgeSearching || !curseForgeHasNextPage}
-                    >
-                      Next
-                    </Button>
-                  </div>
-
-                  <Separator />
-                  <h3 className="text-sm font-semibold">
-                    Installed from CurseForge
-                  </h3>
-                  <ul className="max-h-52 space-y-2 overflow-auto">
-                    {curseForgeInstalled.length === 0 && (
-                      <li className="rounded-none border p-3 text-sm text-muted-foreground">
-                        No CurseForge mods installed yet.
-                      </li>
-                    )}
-                    {curseForgeInstalled.map((mod) => (
-                      <li
-                        key={mod.modId}
-                        className="flex items-center justify-between gap-3 rounded-none border p-3"
-                      >
-                        <div className="min-w-0">
-                          <p className="truncate font-medium">{mod.modName}</p>
-                          <p className="truncate text-sm text-muted-foreground">
-                            {mod.localFilename}
-                          </p>
-                          <p className="text-sm text-muted-foreground">
-                            {mod.updateAvailable
-                              ? `Update available: ${mod.latestFileName ?? mod.latestFileId ?? "new file"}`
-                              : "Up to date"}
-                            {mod.localFileMissing
-                              ? " | local file missing"
-                              : ""}
-                          </p>
-                        </div>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => void updateCurseForgeMod(mod.modId)}
-                          disabled={curseForgeWorking || !mod.updateAvailable}
-                        >
-                          Update
-                        </Button>
-                      </li>
-                    ))}
-                  </ul>
-                </>
-              )}
-            </CardContent>
-          </Card>
-
-          <Card className="xl:col-span-6">
-            <CardHeader>
-              <CardTitle>Nexus Mods</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              {!nexusConfigured ? (
-                user.role === "owner" ? (
-                  <>
-                    <p className="text-sm text-muted-foreground">
-                      Connect via Nexus SSO (recommended) or by API key.
-                      Credentials are encrypted and stored in the dashboard.
-                    </p>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <Button
-                        onClick={() => void startNexusSso()}
-                        disabled={
-                          nexusConnectingSso ||
-                          nexusWorking ||
-                          !serverState?.nexusSsoReady
-                        }
-                      >
-                        {nexusConnectingSso
-                          ? "Waiting for SSO..."
-                          : "Connect with Nexus SSO"}
-                      </Button>
-                      {!serverState?.nexusSsoReady && (
-                        <p className="text-sm text-muted-foreground">
-                          Set HYTALE_NEXUS_APP_ID to enable SSO.
-                        </p>
-                      )}
-                    </div>
-
-                    <form
-                      onSubmit={(event) => void connectNexusManual(event)}
-                      className="grid gap-3 md:grid-cols-2"
-                    >
-                      <div className="space-y-2 md:col-span-2">
-                        <Label htmlFor="nexus-key">API key</Label>
-                        <Input
-                          id="nexus-key"
-                          type="password"
-                          value={nexusManualApiKey}
-                          onChange={(event) =>
-                            setNexusManualApiKey(event.target.value)
-                          }
-                          placeholder="Nexus API key"
-                        />
-                      </div>
-                      <div className="space-y-2">
-                        <Label htmlFor="nexus-domain">Game domain</Label>
-                        <Input
-                          id="nexus-domain"
-                          type="text"
-                          value={nexusGameDomain}
-                          onChange={(event) =>
-                            setNexusGameDomain(event.target.value)
-                          }
-                          placeholder="hytale"
-                        />
-                      </div>
-                      <Button
-                        type="submit"
-                        disabled={nexusWorking}
-                        className="self-end"
-                      >
-                        {nexusWorking ? "Connecting..." : "Connect by API key"}
-                      </Button>
-                    </form>
-                  </>
-                ) : (
-                  <p className="text-sm text-muted-foreground">
-                    Owner needs to connect Nexus before browsing and installing
-                    mods.
-                  </p>
-                )
-              ) : (
-                <>
-                  <p className="text-sm text-muted-foreground">
-                    Connected (
-                    {serverState?.nexusSource === "env"
-                      ? "environment variables"
-                      : "dashboard secure storage"}
-                    ) | game domain: {serverState?.nexusGameDomain ?? "hytale"}
-                  </p>
-
-                  <form
-                    onSubmit={(event) => {
-                      event.preventDefault();
-                      void searchNexusMods(1);
-                    }}
-                    className="grid gap-2 md:grid-cols-[1fr_200px_auto]"
-                  >
-                    <Input
-                      type="text"
-                      value={nexusQuery}
-                      onChange={(event) => setNexusQuery(event.target.value)}
-                      placeholder="Search by mod name or creator"
-                    />
-                    <Select
-                      value={nexusSort}
-                      onValueChange={(value) => {
-                        const nextSort = value as NexusSearchSort;
-                        setNexusSort(nextSort);
-                        setNexusPage(1);
-                        void searchNexusMods(1, { sort: nextSort });
-                      }}
-                    >
-                      <SelectTrigger>
-                        <SelectValue placeholder="Sort" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="popularity">Popularity</SelectItem>
-                        <SelectItem value="downloads">Downloads</SelectItem>
-                        <SelectItem value="lastUpdated">
-                          Last updated
-                        </SelectItem>
-                        <SelectItem value="name">Name</SelectItem>
-                      </SelectContent>
-                    </Select>
-                    <Button
-                      type="submit"
-                      disabled={nexusSearching || nexusWorking}
-                    >
-                      {nexusSearching ? "Searching..." : "Search"}
-                    </Button>
-                  </form>
-
-                  <div className="flex flex-wrap gap-2">
-                    <Button
-                      size="sm"
-                      variant="secondary"
-                      onClick={() => void refreshNexusInstalled(false)}
-                      disabled={nexusWorking}
-                    >
-                      Refresh installed
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => void refreshNexusInstalled(true)}
-                      disabled={nexusWorking}
-                    >
-                      Check updates
-                    </Button>
-                    <Button
-                      size="sm"
-                      onClick={() => void updateAllNexusMods()}
-                      disabled={nexusWorking || nexusInstalled.length === 0}
-                    >
-                      Update all ({nexusUpdateCount})
-                    </Button>
-                  </div>
-
-                  <ul className="max-h-64 space-y-2 overflow-auto">
-                    {nexusResults.map((mod) => (
-                      <li
-                        key={mod.modId}
-                        className="flex items-start justify-between gap-3 rounded-none border p-3"
-                      >
-                        <div className="min-w-0">
-                          <p className="truncate font-medium">{mod.name}</p>
-                          <p className="text-sm text-muted-foreground">
-                            by {mod.author || "Unknown"} |{" "}
-                            {Math.round(mod.downloads).toLocaleString()}{" "}
-                            downloads
-                          </p>
-                          {mod.summary && (
-                            <p className="mt-1 line-clamp-2 text-sm text-muted-foreground">
-                              {mod.summary}
-                            </p>
-                          )}
-                        </div>
-                        <div className="flex shrink-0 gap-2">
-                          <Button size="sm" variant="outline" asChild>
-                            <a
-                              href={`https://www.nexusmods.com/${serverState?.nexusGameDomain ?? "hytale"}/mods/${mod.modId}`}
-                              target="_blank"
-                              rel="noreferrer"
-                            >
-                              Open
-                            </a>
-                          </Button>
-                          <Button
-                            size="sm"
-                            onClick={() => void installNexusMod(mod.modId)}
-                            disabled={nexusWorking}
-                          >
-                            Install
-                          </Button>
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
-
-                  <div className="flex flex-wrap items-center gap-2">
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() =>
-                        void searchNexusMods(Math.max(1, nexusPage - 1))
-                      }
-                      disabled={nexusSearching || nexusPage <= 1}
-                    >
-                      Prev
-                    </Button>
-                    <p className="text-sm text-muted-foreground">
-                      Page {nexusPage} /{" "}
-                      {Math.max(
-                        1,
-                        Math.ceil(nexusTotalCount / NEXUS_PAGE_SIZE),
-                      )}
-                    </p>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => void searchNexusMods(nexusPage + 1)}
-                      disabled={nexusSearching || !nexusHasNextPage}
-                    >
-                      Next
-                    </Button>
-                  </div>
-
-                  <Separator />
-                  <h3 className="text-sm font-semibold">
-                    Installed from Nexus
-                  </h3>
-                  <ul className="max-h-52 space-y-2 overflow-auto">
-                    {nexusInstalled.length === 0 && (
-                      <li className="rounded-none border p-3 text-sm text-muted-foreground">
-                        No Nexus mods installed yet.
-                      </li>
-                    )}
-                    {nexusInstalled.map((mod) => (
-                      <li
-                        key={mod.modId}
-                        className="flex items-center justify-between gap-3 rounded-none border p-3"
-                      >
-                        <div className="min-w-0">
-                          <p className="truncate font-medium">{mod.modName}</p>
-                          <p className="truncate text-sm text-muted-foreground">
-                            {mod.localFilename}
-                          </p>
-                          <p className="text-sm text-muted-foreground">
-                            {mod.updateAvailable
-                              ? `Update available: ${mod.latestFileName ?? mod.latestFileId ?? "new file"}`
-                              : "Up to date"}
-                            {mod.localFileMissing
-                              ? " | local file missing"
-                              : ""}
-                          </p>
-                        </div>
-                        <div className="flex gap-2">
-                          <Button size="sm" variant="outline" asChild>
-                            <a
-                              href={mod.pageUrl}
-                              target="_blank"
-                              rel="noreferrer"
-                            >
-                              Open
-                            </a>
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => void updateNexusMod(mod.modId)}
-                            disabled={nexusWorking || !mod.updateAvailable}
-                          >
-                            Update
-                          </Button>
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
-                </>
-              )}
-            </CardContent>
-          </Card>
-
-          <Card className="xl:col-span-6">
-            <CardHeader>
               <CardTitle>Backups</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
@@ -2357,7 +1862,7 @@ export function App() {
                   type="text"
                   value={backupNote}
                   onChange={(event) => setBackupNote(event.target.value)}
-                  placeholder="Before major mod update"
+                  placeholder="Manual snapshot note (optional)"
                 />
               </div>
 
@@ -2367,7 +1872,7 @@ export function App() {
                   onClick={() => void createBackup()}
                   disabled={busy}
                 >
-                  Create backup
+                  Create manual backup
                 </Button>
                 <Button
                   size="sm"
@@ -2386,10 +1891,15 @@ export function App() {
                     className="flex items-center justify-between gap-3 rounded-none border p-3"
                   >
                     <div>
-                      <p className="font-medium">{backup.id}</p>
+                      <p className="font-medium">{backup.name}</p>
                       <p className="text-sm text-muted-foreground">
-                        {formatDate(backup.createdAt)} | items:{" "}
-                        {backup.itemCount}
+                        {formatDate(backup.createdAt)} |{" "}
+                        {backup.source === "native"
+                          ? backup.archived
+                            ? "Archive"
+                            : "Active"
+                          : "Manual"}{" "}
+                        | {formatBytes(backup.size)}
                       </p>
                       {backup.note && (
                         <p className="text-sm text-muted-foreground">

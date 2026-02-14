@@ -8,24 +8,26 @@ A Bun-first web dashboard for managing a single Hytale server instance.
   - Native downloader mode via built-in Bun OAuth flow (OAuth device auth + signed asset URLs).
   - Installs latest version for the configured patchline and exposes update availability.
 - Start, stop, and restart the server.
+- Runtime settings from dashboard:
+  - Port/bind + native backup controls.
+  - JVM heap controls (`-Xms`, `-Xmx`) and extra JVM args.
 - Live terminal output and command input over WebSocket.
+- Live runtime metrics while running:
+  - CPU usage over time.
+  - Memory usage (RSS/virtual) over time.
+  - Network receive/transmit throughput over time.
 - Log file browsing (`logs/`) and terminal history view.
 - Mod management:
   - Upload `.jar` / `.zip` mods over WebSocket.
+  - Sync a local mods folder: only top-level `.jar` / `.zip` files are considered (subfolders and other files are ignored); server mods are reconciled to match.
+  - On upload, replaces older files with the same plugin identity (resolved from `manifest.json` when available, otherwise filename parsing like `<name>-<version>.jar|zip`).
+  - Reads plugin metadata from archive `manifest.json` to display plugin name/version in the dashboard.
   - Disable/enable (rename with `.disabled`).
   - Delete mods.
-  - CurseForge integration (API-key based):
-    - Browse/search mods (name or creator style query).
-    - Sort by popularity, downloads, updates, name, or author.
-    - Install directly from CurseForge.
-    - Check for updates and update one/all installed CurseForge mods.
-  - Nexus Mods integration:
-    - Connect via SSO-ready flow (requires Nexus app id) or API key.
-    - Browse/search mods, sort by popularity/downloads/updated/name.
-    - Install and update tracked Nexus mods.
 - Backup management:
-  - Create backups.
-  - List and delete backups.
+  - Create manual dashboard backups.
+  - Configure native Hytale automatic backups (`--backup`, `--backup-frequency`, `--backup-max-count`).
+  - List/delete/restore native ZIP backups (including `archive/`) and manual backups.
   - Restore backups (server must be stopped).
 - Authentication:
   - Owner bootstrap account.
@@ -107,7 +109,7 @@ Core:
 - `UPLOADS_DIR` (default: `${DATA_DIR}/uploads`)
 - `TOOLS_DIR` (default: `${DATA_DIR}/tools`)
 - `PUBLIC_BASE_URL` (default: `http://<HOST>:<PORT>`; if `HOST` is `0.0.0.0`/`::`, defaults to `http://localhost:<PORT>`)
-- `HYTALE_SECRET_KEY` (optional but recommended) - master secret used to encrypt dashboard-stored credentials (including CurseForge API key).
+- `HYTALE_SECRET_KEY` (optional but recommended) - master secret used for dashboard-managed secret encryption.
 
 Auth/session:
 
@@ -120,23 +122,7 @@ Hytale runtime/install:
 
 - `HYTALE_MANAGED_JAVA_DIR` (default: `${TOOLS_DIR}/temurin-jdk-25`)
 - `HYTALE_DOWNLOAD_CACHE_DIR` (default: `${TOOLS_DIR}/download-cache`)
-- `HYTALE_CURSEFORGE_STATE_PATH` (default: `${DATA_DIR}/curseforge-mods.json`)
-- `HYTALE_CURSEFORGE_API_HOST` (default: `api.curseforge.com`)
-- `HYTALE_CURSEFORGE_API_KEY` (or `CURSEFORGE_API_KEY`) - optional if you use the dashboard "Connect CurseForge" flow.
-- `HYTALE_CURSEFORGE_GAME_ID` (or `CURSEFORGE_GAME_ID`, default: `70216` for Hytale) - optional if you use the dashboard "Connect CurseForge" flow.
-- `HYTALE_CURSEFORGE_CLASS_ID` (or `CURSEFORGE_CLASS_ID`) - optional category/class filter.
-- `HYTALE_CURSEFORGE_PAGE_SIZE` (default: `20`)
-- `HYTALE_NEXUS_STATE_PATH` (default: `${DATA_DIR}/nexus-mods.json`)
-- `HYTALE_NEXUS_API_HOST` (default: `api.nexusmods.com`)
-- `HYTALE_NEXUS_WEB_HOST` (default: `www.nexusmods.com`)
-- `HYTALE_NEXUS_SSO_WS_URL` (default: `wss://sso.nexusmods.com`)
-- `HYTALE_NEXUS_API_KEY` (or `NEXUS_API_KEY`) - optional if you use dashboard connect flow.
-- `HYTALE_NEXUS_GAME_DOMAIN` (or `NEXUS_GAME_DOMAIN`, default: `hytale`)
-- `HYTALE_NEXUS_APP_ID` (or `NEXUS_APP_ID`) - required for SSO connect flow.
-- `HYTALE_NEXUS_APPLICATION_NAME` (default: `hytale-manager`)
-- `HYTALE_NEXUS_APPLICATION_VERSION` (default: `1.0.0`)
-- `HYTALE_NEXUS_PROTOCOL_VERSION` (default: `1.0.0`)
-- `HYTALE_NEXUS_PAGE_SIZE` (default: `20`)
+- `HYTALE_SERVER_BACKUPS_DIR` (default: `${HYTALE_SERVER_DIR}/backups`) - native Hytale ZIP backup directory used by automatic backup mode.
 - `HYTALE_DOWNLOAD_CONCURRENCY` (default: `6`)
 - `HYTALE_DOWNLOAD_PROGRESS_INTERVAL_MS` (default: `2000`)
 - `HYTALE_ADOPTIUM_API_HOST` (default: `api.adoptium.net`)
@@ -160,6 +146,8 @@ Hytale runtime/install:
 - `HYTALE_STARTUP_TIMEOUT_MS` (default: `120000`)
 - `HYTALE_SHUTDOWN_TIMEOUT_MS` (default: `15000`)
 - `TERMINAL_BUFFER_LINES` (default: `4000`)
+- `HYTALE_METRICS_SAMPLE_INTERVAL_MS` (default: `2000`)
+- `HYTALE_METRICS_HISTORY_POINTS` (default: `300`)
 
 Optional SMTP for invite emails:
 
@@ -222,22 +210,8 @@ Java runtime behavior:
 - You can install Adoptium Temurin JDK 25 from the dashboard (`Install Adoptium JDK 25`).
 - Start/stop/restart are blocked until both server files and managed Adoptium JDK 25 are installed.
 - Managed runtime is stored under `HYTALE_MANAGED_JAVA_DIR`.
-
-CurseForge behavior:
-
-- Requires a CurseForge API key and game ID (via environment variables or dashboard connect flow).
-- Alternatively, owner can configure CurseForge once in the dashboard; credentials are encrypted at rest and stored in `app.sqlite`.
-- Tracks CurseForge-installed mods in `HYTALE_CURSEFORGE_STATE_PATH`.
-- Mod disable/enable/delete actions keep CurseForge tracking metadata in sync.
-- Updates are detected by comparing installed file IDs to the latest available file per mod.
-
-Nexus behavior:
-
-- Owner can connect Nexus from the dashboard using SSO-ready flow or direct API key.
-- API key is encrypted at rest and stored in `app.sqlite` when dashboard connect is used.
-- Tracks Nexus-installed mods in `HYTALE_NEXUS_STATE_PATH`.
-- Mod disable/enable/delete actions keep Nexus tracking metadata in sync.
-- Download/install behavior depends on Nexus account permissions (premium/direct-download constraints may apply).
+- Runtime defaults are `-Xms2048m -Xmx4096m` (editable in dashboard runtime settings).
+- Extra JVM flags can be set in dashboard runtime settings (for example GC tuning flags).
 
 ## Security notes
 
@@ -252,6 +226,7 @@ Under `DATA_DIR`:
 
 - `app.sqlite` - users/sessions/invites/app settings
 - `hytale-server/` - managed server runtime files
+- `hytale-server/backups/` - native Hytale ZIP backups (`archive/` for rotated backups)
 - `uploads/` - temporary upload chunks
 - `backups/` - backup directories + metadata
 - `.hytale-manager-secret.key` - generated encryption key for dashboard-stored secrets (unless `HYTALE_SECRET_KEY` is set)

@@ -32,6 +32,25 @@ type UploadSession = {
   stream: WriteStream;
 };
 
+type ModIdentity = {
+  pluginKey: string | null;
+  pluginName: string;
+  pluginVersion: string | null;
+  metadataSource: "manifest" | "filename" | "unknown";
+};
+
+type ModMetadataCacheEntry = {
+  size: number;
+  mtimeMs: number;
+  identity: ModIdentity;
+};
+
+type NetworkCounterSample = {
+  atMs: number;
+  rxBytes: number;
+  txBytes: number;
+};
+
 type InstallAvailability = {
   patchline: string;
   installedVersion: string | null;
@@ -44,6 +63,18 @@ export type ModEntry = {
   size: number;
   updatedAt: string;
   disabled: boolean;
+  pluginName: string;
+  pluginVersion: string | null;
+  metadataSource: "manifest" | "filename" | "unknown";
+};
+
+export type ServerMetricPoint = {
+  timestamp: string;
+  cpuPercent: number;
+  rssBytes: number;
+  virtualMemoryBytes: number;
+  networkRxBytesPerSec: number | null;
+  networkTxBytesPerSec: number | null;
 };
 
 export type CurseForgeSearchSort = "popularity" | "lastUpdated" | "name" | "author" | "totalDownloads";
@@ -137,8 +168,13 @@ export type LogFileSummary = {
 
 export type BackupEntry = {
   id: string;
+  name: string;
   createdAt: string;
   note: string;
+  size: number;
+  archived: boolean;
+  source: "manual" | "native";
+  format: "directory" | "zip";
   itemCount: number;
 };
 
@@ -420,6 +456,17 @@ type CurseForgeRuntimeConfig = {
   source: "env" | "dashboard";
 };
 
+type ServerRuntimeSettings = {
+  bindPort: number;
+  autoBackupEnabled: boolean;
+  backupFrequencyMinutes: number;
+  backupMaxCount: number;
+  backupDirectory: string;
+  javaMinHeapMb: number;
+  javaMaxHeapMb: number;
+  javaExtraArgs: string;
+};
+
 const CURSEFORGE_SETTING_API_KEY = "curseforge.api_key.encrypted";
 const CURSEFORGE_SETTING_GAME_ID = "curseforge.game_id";
 const CURSEFORGE_SETTING_CLASS_ID = "curseforge.class_id";
@@ -427,6 +474,18 @@ const NEXUS_SETTING_API_KEY = "nexus.api_key.encrypted";
 const NEXUS_SETTING_GAME_DOMAIN = "nexus.game_domain";
 const NEXUS_SETTING_IS_PREMIUM = "nexus.is_premium";
 const NEXUS_SETTING_USER_NAME = "nexus.user_name";
+const SERVER_BIND_PORT_SETTING = "server.bind_port";
+const SERVER_AUTO_BACKUP_ENABLED_SETTING = "server.auto_backup_enabled";
+const SERVER_BACKUP_FREQUENCY_MINUTES_SETTING = "server.backup_frequency_minutes";
+const SERVER_BACKUP_MAX_COUNT_SETTING = "server.backup_max_count";
+const SERVER_JAVA_MIN_HEAP_MB_SETTING = "server.java_min_heap_mb";
+const SERVER_JAVA_MAX_HEAP_MB_SETTING = "server.java_max_heap_mb";
+const SERVER_JAVA_EXTRA_ARGS_SETTING = "server.java_extra_args";
+const DEFAULT_SERVER_BIND_PORT = 25565;
+const DEFAULT_BACKUP_FREQUENCY_MINUTES = 30;
+const DEFAULT_BACKUP_MAX_COUNT = 12;
+const DEFAULT_SERVER_JAVA_MIN_HEAP_MB = 2048;
+const DEFAULT_SERVER_JAVA_MAX_HEAP_MB = 4096;
 
 export class HytaleManager {
   private process: Bun.Subprocess<"pipe", "pipe", "pipe"> | null = null;
@@ -434,6 +493,11 @@ export class HytaleManager {
   private startedAt: string | null = null;
   private lastExitCode: number | null = null;
   private readonly terminalBuffer: string[] = [];
+  private readonly modMetadataCache = new Map<string, ModMetadataCacheEntry>();
+  private metricsTimer: Timer | null = null;
+  private metricsCollecting = false;
+  private metricsHistory: ServerMetricPoint[] = [];
+  private previousNetworkSample: NetworkCounterSample | null = null;
   private readonly uploads = new Map<string, UploadSession>();
   private javaInstallPromise: Promise<JavaRuntimeInstallResult> | null = null;
   private initializationPromise: Promise<void> | null = null;
@@ -452,11 +516,11 @@ export class HytaleManager {
     const managedJavaCommand = await this.getManagedJavaCommandIfInstalled();
     const installed = await this.isInstalled();
     const installAvailability = await this.getInstallAvailability();
-    const curseForgeConfig = await this.getCurseForgeConfig();
-    const nexusConfig = await this.getNexusConfig();
+    const runtimeSettings = await this.getServerRuntimeSettings();
+    const startArgs = this.buildStartArguments(runtimeSettings);
     const command = managedJavaCommand
-      ? `${managedJavaCommand} ${config.hytale.startArgs}`
-      : `Install Adoptium JDK 25 first, then run: <managed-java> ${config.hytale.startArgs}`;
+      ? [managedJavaCommand, ...startArgs].join(" ")
+      : `Install Adoptium JDK 25 first, then run: <managed-java> ${startArgs.join(" ")}`;
     return {
       status: this.status,
       startedAt: this.startedAt,
@@ -464,22 +528,126 @@ export class HytaleManager {
       installed,
       javaInstalled: !!managedJavaCommand,
       lifecycleReady: installed && !!managedJavaCommand,
-      curseForgeConfigured: !!curseForgeConfig,
-      curseForgeGameId: curseForgeConfig?.gameId ?? null,
-      curseForgeClassId: curseForgeConfig?.classId ?? null,
-      curseForgeSource: curseForgeConfig?.source ?? null,
-      nexusConfigured: !!nexusConfig,
-      nexusGameDomain: nexusConfig?.gameDomain ?? null,
-      nexusSource: nexusConfig?.source ?? null,
-      nexusSsoReady: config.hytale.nexusAppId.trim().length > 0,
       installedVersion: installAvailability.installedVersion,
       latestVersion: installAvailability.latestVersion,
       updateAvailable: installAvailability.updateAvailable,
       patchline: installAvailability.patchline,
       command,
       serverDir: config.hytale.serverDir,
+      bindPort: runtimeSettings.bindPort,
+      autoBackupEnabled: runtimeSettings.autoBackupEnabled,
+      backupFrequencyMinutes: runtimeSettings.backupFrequencyMinutes,
+      backupMaxCount: runtimeSettings.backupMaxCount,
+      backupDir: runtimeSettings.backupDirectory,
+      javaMinHeapMb: runtimeSettings.javaMinHeapMb,
+      javaMaxHeapMb: runtimeSettings.javaMaxHeapMb,
+      javaExtraArgs: runtimeSettings.javaExtraArgs,
+      metricsSampling: this.status === "running" || this.status === "starting",
+      metricsSampleIntervalMs: this.getMetricsSampleIntervalMs(),
+      metricsHistoryLimit: this.getMetricsHistoryLimit(),
+      metrics: this.metricsHistory,
       terminal: this.terminalBuffer,
     };
+  }
+
+  async updateServerRuntimeSettings(input: {
+    bindPort?: number;
+    autoBackupEnabled?: boolean;
+    backupFrequencyMinutes?: number;
+    backupMaxCount?: number;
+    javaMinHeapMb?: number;
+    javaMaxHeapMb?: number;
+    javaExtraArgs?: string;
+  }): Promise<Awaited<ReturnType<HytaleManager["snapshot"]>>> {
+    const current = await this.getServerRuntimeSettings();
+    const next: ServerRuntimeSettings = { ...current };
+
+    if (input.bindPort !== undefined) {
+      if (!Number.isInteger(input.bindPort) || input.bindPort < 1 || input.bindPort > 65535) {
+        throw new AppError(400, "bindPort must be an integer between 1 and 65535.");
+      }
+      next.bindPort = input.bindPort;
+    }
+
+    if (input.autoBackupEnabled !== undefined) {
+      next.autoBackupEnabled = input.autoBackupEnabled;
+    }
+
+    if (input.backupFrequencyMinutes !== undefined) {
+      if (
+        !Number.isInteger(input.backupFrequencyMinutes) ||
+        input.backupFrequencyMinutes < 1 ||
+        input.backupFrequencyMinutes > 24 * 60
+      ) {
+        throw new AppError(400, "backupFrequencyMinutes must be an integer between 1 and 1440.");
+      }
+      next.backupFrequencyMinutes = input.backupFrequencyMinutes;
+    }
+
+    if (input.backupMaxCount !== undefined) {
+      if (!Number.isInteger(input.backupMaxCount) || input.backupMaxCount < 1 || input.backupMaxCount > 500) {
+        throw new AppError(400, "backupMaxCount must be an integer between 1 and 500.");
+      }
+      next.backupMaxCount = input.backupMaxCount;
+    }
+
+    if (input.javaMinHeapMb !== undefined) {
+      if (!Number.isInteger(input.javaMinHeapMb) || input.javaMinHeapMb < 256 || input.javaMinHeapMb > 1024 * 1024) {
+        throw new AppError(400, "javaMinHeapMb must be an integer between 256 and 1048576.");
+      }
+      next.javaMinHeapMb = input.javaMinHeapMb;
+    }
+
+    if (input.javaMaxHeapMb !== undefined) {
+      if (!Number.isInteger(input.javaMaxHeapMb) || input.javaMaxHeapMb < 256 || input.javaMaxHeapMb > 1024 * 1024) {
+        throw new AppError(400, "javaMaxHeapMb must be an integer between 256 and 1048576.");
+      }
+      next.javaMaxHeapMb = input.javaMaxHeapMb;
+    }
+
+    if (next.javaMinHeapMb > next.javaMaxHeapMb) {
+      throw new AppError(400, "javaMinHeapMb cannot be greater than javaMaxHeapMb.");
+    }
+
+    if (input.javaExtraArgs !== undefined) {
+      const candidate = String(input.javaExtraArgs ?? "").trim();
+      if (candidate.length > 2000) {
+        throw new AppError(400, "javaExtraArgs is too long (maximum 2000 characters).");
+      }
+
+      const parsedArgs = parseArgs(candidate);
+      if (parsedArgs.some((token) => token.toLowerCase() === "-jar")) {
+        throw new AppError(400, "javaExtraArgs cannot include '-jar'.");
+      }
+      if (parsedArgs.some((token) => this.isManagedJavaRuntimeArgument(token))) {
+        throw new AppError(
+          400,
+          "javaExtraArgs cannot include -Xms/-Xmx. Use javaMinHeapMb and javaMaxHeapMb instead.",
+        );
+      }
+      next.javaExtraArgs = candidate;
+    }
+
+    setAppSetting(SERVER_BIND_PORT_SETTING, String(next.bindPort));
+    setAppSetting(SERVER_AUTO_BACKUP_ENABLED_SETTING, next.autoBackupEnabled ? "1" : "0");
+    setAppSetting(SERVER_BACKUP_FREQUENCY_MINUTES_SETTING, String(next.backupFrequencyMinutes));
+    setAppSetting(SERVER_BACKUP_MAX_COUNT_SETTING, String(next.backupMaxCount));
+    setAppSetting(SERVER_JAVA_MIN_HEAP_MB_SETTING, String(next.javaMinHeapMb));
+    setAppSetting(SERVER_JAVA_MAX_HEAP_MB_SETTING, String(next.javaMaxHeapMb));
+    setAppSetting(SERVER_JAVA_EXTRA_ARGS_SETTING, next.javaExtraArgs);
+
+    await mkdir(next.backupDirectory, { recursive: true });
+
+    this.pushTerminal(
+      `Runtime settings updated: bind=0.0.0.0:${next.bindPort}, autoBackup=${next.autoBackupEnabled ? "on" : "off"}, backupFrequency=${next.backupFrequencyMinutes}m, backupMaxCount=${next.backupMaxCount}, javaHeap=${next.javaMinHeapMb}m-${next.javaMaxHeapMb}m.`,
+      "system",
+    );
+
+    if (this.status === "running" || this.status === "starting") {
+      this.pushTerminal("Runtime settings will apply fully on the next server restart.", "system");
+    }
+
+    return await this.snapshot();
   }
 
   async install(): Promise<{ installed: boolean; version: string; updated: boolean; applied: boolean }> {
@@ -945,6 +1113,487 @@ export class HytaleManager {
     };
   }
 
+  private async getServerRuntimeSettings(): Promise<ServerRuntimeSettings> {
+    const javaHeapDefaults = this.resolveDefaultJavaHeapSettings();
+    const bindPort = this.readIntegerSetting(SERVER_BIND_PORT_SETTING, DEFAULT_SERVER_BIND_PORT, 1, 65535);
+    const autoBackupEnabled = this.readBooleanSetting(SERVER_AUTO_BACKUP_ENABLED_SETTING, true);
+    const backupFrequencyMinutes = this.readIntegerSetting(
+      SERVER_BACKUP_FREQUENCY_MINUTES_SETTING,
+      DEFAULT_BACKUP_FREQUENCY_MINUTES,
+      1,
+      24 * 60,
+    );
+    const backupMaxCount = this.readIntegerSetting(SERVER_BACKUP_MAX_COUNT_SETTING, DEFAULT_BACKUP_MAX_COUNT, 1, 500);
+    let javaMinHeapMb = this.readIntegerSetting(
+      SERVER_JAVA_MIN_HEAP_MB_SETTING,
+      javaHeapDefaults.minHeapMb,
+      256,
+      1024 * 1024,
+    );
+    let javaMaxHeapMb = this.readIntegerSetting(
+      SERVER_JAVA_MAX_HEAP_MB_SETTING,
+      javaHeapDefaults.maxHeapMb,
+      256,
+      1024 * 1024,
+    );
+    const javaExtraArgs = (getAppSetting(SERVER_JAVA_EXTRA_ARGS_SETTING) ?? "").trim();
+
+    if (javaMinHeapMb > javaMaxHeapMb) {
+      const fixedMin = Math.min(javaMinHeapMb, javaMaxHeapMb);
+      const fixedMax = Math.max(javaMinHeapMb, javaMaxHeapMb);
+      javaMinHeapMb = fixedMin;
+      javaMaxHeapMb = fixedMax;
+    }
+
+    await mkdir(config.hytale.backupsDir, { recursive: true });
+
+    return {
+      bindPort,
+      autoBackupEnabled,
+      backupFrequencyMinutes,
+      backupMaxCount,
+      backupDirectory: config.hytale.backupsDir,
+      javaMinHeapMb,
+      javaMaxHeapMb,
+      javaExtraArgs,
+    };
+  }
+
+  private resolveDefaultJavaHeapSettings(): { minHeapMb: number; maxHeapMb: number } {
+    const startArgs = parseArgs(config.hytale.startArgs);
+    const configuredMin = this.extractJvmHeapOptionMb(startArgs, "-Xms");
+    const configuredMax = this.extractJvmHeapOptionMb(startArgs, "-Xmx");
+
+    const maxHeapMb = configuredMax ?? DEFAULT_SERVER_JAVA_MAX_HEAP_MB;
+    const minHeapFallback = Math.min(DEFAULT_SERVER_JAVA_MIN_HEAP_MB, maxHeapMb);
+    const minHeapMb = configuredMin ?? minHeapFallback;
+
+    return {
+      minHeapMb: Math.max(256, Math.min(minHeapMb, 1024 * 1024)),
+      maxHeapMb: Math.max(256, Math.min(Math.max(maxHeapMb, minHeapMb), 1024 * 1024)),
+    };
+  }
+
+  private extractJvmHeapOptionMb(args: string[], flag: "-Xms" | "-Xmx"): number | null {
+    for (let index = 0; index < args.length; index += 1) {
+      const token = args[index];
+      if (token === flag) {
+        const parsedNext = this.parseHeapSizeToMb(args[index + 1] ?? "");
+        if (parsedNext !== null) {
+          return parsedNext;
+        }
+        continue;
+      }
+
+      if (token.startsWith(flag)) {
+        const parsedInline = this.parseHeapSizeToMb(token.slice(flag.length));
+        if (parsedInline !== null) {
+          return parsedInline;
+        }
+      }
+    }
+
+    return null;
+  }
+
+  private parseHeapSizeToMb(rawValue: string): number | null {
+    const trimmed = rawValue.trim();
+    if (!trimmed) {
+      return null;
+    }
+
+    const match = /^([0-9]+)([kKmMgG]?)$/.exec(trimmed);
+    if (!match) {
+      return null;
+    }
+
+    const amount = Number(match[1]);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return null;
+    }
+
+    const unit = (match[2] ?? "").toLowerCase();
+    if (unit === "g") {
+      return amount * 1024;
+    }
+    if (unit === "k") {
+      return Math.max(1, Math.round(amount / 1024));
+    }
+    return amount;
+  }
+
+  private readIntegerSetting(settingKey: string, fallback: number, min: number, max: number): number {
+    const raw = getAppSetting(settingKey);
+    const parsed = raw === null ? NaN : Number(raw);
+    if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
+      return fallback;
+    }
+    return parsed;
+  }
+
+  private readBooleanSetting(settingKey: string, fallback: boolean): boolean {
+    const raw = getAppSetting(settingKey);
+    if (raw === null) {
+      return fallback;
+    }
+
+    const normalized = raw.trim().toLowerCase();
+    if (normalized === "1" || normalized === "true" || normalized === "yes" || normalized === "on") {
+      return true;
+    }
+    if (normalized === "0" || normalized === "false" || normalized === "no" || normalized === "off") {
+      return false;
+    }
+    return fallback;
+  }
+
+  private buildStartArguments(runtimeSettings: ServerRuntimeSettings): string[] {
+    const baseArgs = parseArgs(config.hytale.startArgs);
+    const args = this.stripManagedRuntimeArgs(baseArgs);
+    const jarIndex = args.indexOf("-jar");
+    const preJarArgs = jarIndex >= 0 ? args.slice(0, jarIndex) : args.slice();
+    const jarAndServerArgs = jarIndex >= 0 ? args.slice(jarIndex) : [];
+    const javaRuntimeArgs = this.buildJavaRuntimeArgs(runtimeSettings);
+
+    const composed = [...preJarArgs, ...javaRuntimeArgs, ...jarAndServerArgs];
+    composed.push("--bind", `0.0.0.0:${runtimeSettings.bindPort}`);
+
+    if (runtimeSettings.autoBackupEnabled) {
+      composed.push(
+        "--backup",
+        "--backup-dir",
+        runtimeSettings.backupDirectory,
+        "--backup-frequency",
+        String(runtimeSettings.backupFrequencyMinutes),
+        "--backup-max-count",
+        String(runtimeSettings.backupMaxCount),
+      );
+    }
+
+    return composed;
+  }
+
+  private buildJavaRuntimeArgs(runtimeSettings: ServerRuntimeSettings): string[] {
+    const args = [`-Xms${runtimeSettings.javaMinHeapMb}m`, `-Xmx${runtimeSettings.javaMaxHeapMb}m`];
+    if (!runtimeSettings.javaExtraArgs) {
+      return args;
+    }
+
+    const parsed = parseArgs(runtimeSettings.javaExtraArgs).filter(
+      (arg) => !this.isManagedJavaRuntimeArgument(arg) && arg.toLowerCase() !== "-jar",
+    );
+    return [...args, ...parsed];
+  }
+
+  private isManagedJavaRuntimeArgument(value: string): boolean {
+    const normalized = value.toLowerCase();
+    if (normalized === "-xms" || normalized === "-xmx") {
+      return true;
+    }
+    return /^-xms/i.test(value) || /^-xmx/i.test(value);
+  }
+
+  private stripManagedRuntimeArgs(args: string[]): string[] {
+    const result: string[] = [];
+    for (let index = 0; index < args.length; index += 1) {
+      const current = args[index];
+
+      if (current === "--backup") {
+        continue;
+      }
+
+      if (
+        current === "--bind" ||
+        current === "-b" ||
+        current === "--backup-dir" ||
+        current === "--backup-frequency" ||
+        current === "--backup-max-count"
+      ) {
+        index += 1;
+        continue;
+      }
+
+      if (current.toLowerCase() === "-xms" || current.toLowerCase() === "-xmx") {
+        index += 1;
+        continue;
+      }
+
+      if (this.isManagedJavaRuntimeArgument(current)) {
+        continue;
+      }
+
+      result.push(current);
+    }
+
+    return result;
+  }
+
+  private getMetricsSampleIntervalMs(): number {
+    const configured = Math.trunc(config.hytale.metricsSampleIntervalMs);
+    if (!Number.isFinite(configured) || configured < 250) {
+      return 2_000;
+    }
+    return configured;
+  }
+
+  private getMetricsHistoryLimit(): number {
+    const configured = Math.trunc(config.hytale.metricsHistoryPoints);
+    if (!Number.isFinite(configured) || configured < 10) {
+      return 300;
+    }
+    return Math.min(10_000, configured);
+  }
+
+  private startMetricsCollection(pid: number): void {
+    this.stopMetricsCollection();
+    this.metricsHistory = [];
+    this.previousNetworkSample = null;
+
+    const sampleIntervalMs = this.getMetricsSampleIntervalMs();
+    void this.collectAndBroadcastMetrics(pid);
+    this.metricsTimer = setInterval(() => {
+      void this.collectAndBroadcastMetrics(pid);
+    }, sampleIntervalMs);
+  }
+
+  private stopMetricsCollection(): void {
+    if (this.metricsTimer) {
+      clearInterval(this.metricsTimer);
+      this.metricsTimer = null;
+    }
+    this.metricsCollecting = false;
+    this.previousNetworkSample = null;
+  }
+
+  private async collectAndBroadcastMetrics(pid: number): Promise<void> {
+    if (this.metricsCollecting) {
+      return;
+    }
+
+    if (!this.process || this.process.pid !== pid || this.status === "stopped") {
+      return;
+    }
+
+    this.metricsCollecting = true;
+    try {
+      const processStats = await this.readProcessMetrics(pid);
+      if (!processStats) {
+        return;
+      }
+
+      const networkStats = await this.readSystemNetworkThroughput();
+      const point: ServerMetricPoint = {
+        timestamp: new Date().toISOString(),
+        cpuPercent: processStats.cpuPercent,
+        rssBytes: processStats.rssBytes,
+        virtualMemoryBytes: processStats.virtualMemoryBytes,
+        networkRxBytesPerSec: networkStats?.rxBytesPerSec ?? null,
+        networkTxBytesPerSec: networkStats?.txBytesPerSec ?? null,
+      };
+
+      this.metricsHistory.push(point);
+      const limit = this.getMetricsHistoryLimit();
+      if (this.metricsHistory.length > limit) {
+        this.metricsHistory.splice(0, this.metricsHistory.length - limit);
+      }
+
+      this.broadcast("server.metrics", {
+        point,
+      });
+    } finally {
+      this.metricsCollecting = false;
+    }
+  }
+
+  private async readProcessMetrics(
+    pid: number,
+  ): Promise<{ cpuPercent: number; rssBytes: number; virtualMemoryBytes: number } | null> {
+    const psBin = Bun.which("ps");
+    if (!psBin) {
+      return null;
+    }
+
+    const result = await this.runCommandCapture([psBin, "-p", String(pid), "-o", "pcpu=,rss=,vsz="]);
+    if (result.code !== 0) {
+      return null;
+    }
+
+    const line = result.stdout
+      .split(/\r?\n/)
+      .map((value) => value.trim())
+      .filter((value) => value.length > 0)[0];
+    if (!line) {
+      return null;
+    }
+
+    const parts = line.split(/\s+/);
+    const cpuPercent = Number(parts[0] ?? NaN);
+    const rssKb = Number(parts[1] ?? NaN);
+    const vmsKb = Number(parts[2] ?? NaN);
+    if (!Number.isFinite(cpuPercent) || !Number.isFinite(rssKb) || !Number.isFinite(vmsKb)) {
+      return null;
+    }
+
+    return {
+      cpuPercent: Math.max(0, cpuPercent),
+      rssBytes: Math.max(0, rssKb) * 1024,
+      virtualMemoryBytes: Math.max(0, vmsKb) * 1024,
+    };
+  }
+
+  private async readSystemNetworkThroughput(): Promise<{ rxBytesPerSec: number; txBytesPerSec: number } | null> {
+    const counters = await this.readSystemNetworkCounters();
+    if (!counters) {
+      this.previousNetworkSample = null;
+      return null;
+    }
+
+    const now = Date.now();
+    const previous = this.previousNetworkSample;
+    this.previousNetworkSample = {
+      atMs: now,
+      rxBytes: counters.rxBytes,
+      txBytes: counters.txBytes,
+    };
+
+    if (!previous) {
+      return null;
+    }
+
+    const deltaMs = now - previous.atMs;
+    if (deltaMs <= 0) {
+      return null;
+    }
+
+    const elapsedSeconds = deltaMs / 1000;
+    const rxBytesPerSec = Math.max(0, (counters.rxBytes - previous.rxBytes) / elapsedSeconds);
+    const txBytesPerSec = Math.max(0, (counters.txBytes - previous.txBytes) / elapsedSeconds);
+    return {
+      rxBytesPerSec,
+      txBytesPerSec,
+    };
+  }
+
+  private async readSystemNetworkCounters(): Promise<{ rxBytes: number; txBytes: number } | null> {
+    if (process.platform === "linux") {
+      return await this.readLinuxNetworkCounters();
+    }
+
+    if (process.platform === "darwin") {
+      return await this.readDarwinNetworkCounters();
+    }
+
+    return null;
+  }
+
+  private async readLinuxNetworkCounters(): Promise<{ rxBytes: number; txBytes: number } | null> {
+    const procPath = "/proc/net/dev";
+    if (!(await pathExists(procPath))) {
+      return null;
+    }
+
+    try {
+      const raw = await readFile(procPath, "utf8");
+      const lines = raw.split(/\r?\n/).slice(2);
+      let rxBytes = 0;
+      let txBytes = 0;
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) {
+          continue;
+        }
+
+        const [ifaceRaw, countersRaw] = trimmed.split(":");
+        if (!ifaceRaw || !countersRaw) {
+          continue;
+        }
+
+        const iface = ifaceRaw.trim();
+        if (iface === "lo" || iface.startsWith("lo")) {
+          continue;
+        }
+
+        const counters = countersRaw.trim().split(/\s+/);
+        const rx = Number(counters[0] ?? NaN);
+        const tx = Number(counters[8] ?? NaN);
+        if (!Number.isFinite(rx) || !Number.isFinite(tx)) {
+          continue;
+        }
+
+        rxBytes += rx;
+        txBytes += tx;
+      }
+
+      return { rxBytes, txBytes };
+    } catch {
+      return null;
+    }
+  }
+
+  private async readDarwinNetworkCounters(): Promise<{ rxBytes: number; txBytes: number } | null> {
+    const netstatBin = Bun.which("netstat");
+    if (!netstatBin) {
+      return null;
+    }
+
+    const result = await this.runCommandCapture([netstatBin, "-ibn"]);
+    if (result.code !== 0 || result.stdout.trim().length === 0) {
+      return null;
+    }
+
+    const lines = result.stdout.split(/\r?\n/).filter((line) => line.trim().length > 0);
+    const headerLine = lines.find((line) => line.includes("Ibytes") && line.includes("Obytes"));
+    if (!headerLine) {
+      return null;
+    }
+
+    const headers = headerLine.trim().split(/\s+/);
+    const rxIndex = headers.indexOf("Ibytes");
+    const txIndex = headers.indexOf("Obytes");
+    if (rxIndex < 0 || txIndex < 0) {
+      return null;
+    }
+
+    const perInterface = new Map<string, { rx: number; tx: number }>();
+
+    for (const line of lines) {
+      if (line === headerLine) {
+        continue;
+      }
+
+      const parts = line.trim().split(/\s+/);
+      if (parts.length <= Math.max(rxIndex, txIndex)) {
+        continue;
+      }
+
+      const iface = parts[0] ?? "";
+      if (!iface || iface === "Name" || iface.startsWith("lo")) {
+        continue;
+      }
+
+      const rx = Number(parts[rxIndex] ?? NaN);
+      const tx = Number(parts[txIndex] ?? NaN);
+      if (!Number.isFinite(rx) || !Number.isFinite(tx)) {
+        continue;
+      }
+
+      const previous = perInterface.get(iface);
+      if (!previous || rx + tx > previous.rx + previous.tx) {
+        perInterface.set(iface, { rx, tx });
+      }
+    }
+
+    let rxBytes = 0;
+    let txBytes = 0;
+    for (const entry of perInterface.values()) {
+      rxBytes += entry.rx;
+      txBytes += entry.tx;
+    }
+
+    return { rxBytes, txBytes };
+  }
+
   async start(): Promise<void> {
     if (this.status === "running" || this.status === "starting") {
       throw new AppError(409, "Server is already running.");
@@ -962,7 +1611,8 @@ export class HytaleManager {
         throw new AppError(500, "Java command is unavailable.");
       }
 
-      const command = [javaCommand, ...parseArgs(config.hytale.startArgs)];
+      const runtimeSettings = await this.getServerRuntimeSettings();
+      const command = [javaCommand, ...this.buildStartArguments(runtimeSettings)];
       this.pushTerminal(`Starting server: ${command.join(" ")}`, "system");
 
       this.process = Bun.spawn(command, {
@@ -976,11 +1626,13 @@ export class HytaleManager {
       this.startedAt = new Date().toISOString();
       this.status = "running";
       this.emitState();
+      this.startMetricsCollection(this.process.pid);
 
       this.consumeStream(this.process.stdout, "stdout");
       this.consumeStream(this.process.stderr, "stderr");
 
       this.process.exited.then((code) => {
+        this.stopMetricsCollection();
         this.lastExitCode = code;
         this.pushTerminal(`Server exited with code ${code}`, "system");
         this.process = null;
@@ -989,6 +1641,7 @@ export class HytaleManager {
         this.emitState();
       });
     } catch (error) {
+      this.stopMetricsCollection();
       this.status = "stopped";
       this.startedAt = null;
       this.emitState();
@@ -1081,22 +1734,17 @@ export class HytaleManager {
     await mkdir(modsDir, { recursive: true });
 
     const entries = await readdir(modsDir, { withFileTypes: true });
-    const mods: ModEntry[] = [];
-
-    for (const entry of entries) {
-      if (!entry.isFile()) {
-        continue;
+    const fileEntries = entries.filter((entry) => entry.isFile());
+    const activePaths = new Set(fileEntries.map((entry) => path.join(modsDir, entry.name)));
+    for (const cachedPath of this.modMetadataCache.keys()) {
+      if (cachedPath.startsWith(`${modsDir}${path.sep}`) && !activePaths.has(cachedPath)) {
+        this.modMetadataCache.delete(cachedPath);
       }
-
-      const fullPath = path.join(modsDir, entry.name);
-      const fileStats = await stat(fullPath);
-      mods.push({
-        filename: entry.name,
-        size: fileStats.size,
-        updatedAt: fileStats.mtime.toISOString(),
-        disabled: entry.name.endsWith(".disabled"),
-      });
     }
+
+    const mods = await Promise.all(
+      fileEntries.map(async (entry) => await this.readModEntry(modsDir, entry.name)),
+    );
 
     mods.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
     return mods;
@@ -1129,8 +1777,7 @@ export class HytaleManager {
     }
 
     await rm(target, { force: true });
-    await this.removeCurseForgeTrackingForFilename(safeName);
-    await this.removeNexusTrackingForFilename(safeName);
+    this.invalidateModMetadataCacheEntry(target);
   }
 
   async searchCurseForgeMods(options?: {
@@ -1404,7 +2051,8 @@ export class HytaleManager {
 
   async startModUpload(filename: string, size: number): Promise<{ uploadId: string }> {
     const safeName = sanitizeFilename(filename);
-    if (!safeName.endsWith(".jar") && !safeName.endsWith(".zip")) {
+    const lowerName = safeName.toLowerCase();
+    if (!lowerName.endsWith(".jar") && !lowerName.endsWith(".zip")) {
       throw new AppError(400, "Only .jar and .zip mods are supported.");
     }
 
@@ -1476,18 +2124,26 @@ export class HytaleManager {
     const modsDir = path.join(config.hytale.serverDir, "mods");
     await mkdir(modsDir, { recursive: true });
 
-    const destination = await this.resolveUniquePath(path.join(modsDir, upload.filename));
-    await rename(upload.tempPath, destination);
+    try {
+      const uploadIdentity = await this.resolveModIdentity(upload.tempPath, upload.filename);
+      if (uploadIdentity.pluginKey) {
+        await this.removeExistingModsForPluginKey(modsDir, uploadIdentity.pluginKey);
+      }
 
-    this.uploads.delete(uploadId);
-    const fileStats = await stat(destination);
+      const destination = path.join(modsDir, upload.filename);
+      if (await pathExists(destination)) {
+        await rm(destination, { force: true });
+        this.invalidateModMetadataCacheEntry(destination);
+      }
 
-    return {
-      filename: path.basename(destination),
-      size: fileStats.size,
-      updatedAt: fileStats.mtime.toISOString(),
-      disabled: false,
-    };
+      await rename(upload.tempPath, destination);
+      this.invalidateModMetadataCacheEntry(destination);
+      this.pushTerminal(`Uploaded mod ${path.basename(destination)}.`, "system");
+      return await this.readModEntry(modsDir, path.basename(destination), uploadIdentity);
+    } finally {
+      this.uploads.delete(uploadId);
+      await rm(upload.tempPath, { force: true });
+    }
   }
 
   async cancelModUpload(uploadId: string): Promise<void> {
@@ -1499,6 +2155,256 @@ export class HytaleManager {
     upload.stream.destroy();
     await rm(upload.tempPath, { force: true });
     this.uploads.delete(uploadId);
+  }
+
+  private async readModEntry(modsDir: string, filename: string, identityOverride?: ModIdentity): Promise<ModEntry> {
+    const fullPath = path.join(modsDir, filename);
+    const fileStats = await stat(fullPath);
+
+    let identity: ModIdentity;
+    if (identityOverride) {
+      identity = identityOverride;
+      this.modMetadataCache.set(fullPath, {
+        size: fileStats.size,
+        mtimeMs: fileStats.mtimeMs,
+        identity,
+      });
+    } else {
+      identity = await this.resolveCachedModIdentity(fullPath, filename, fileStats.size, fileStats.mtimeMs);
+    }
+
+    return {
+      filename,
+      size: fileStats.size,
+      updatedAt: fileStats.mtime.toISOString(),
+      disabled: filename.endsWith(".disabled"),
+      pluginName: identity.pluginName,
+      pluginVersion: identity.pluginVersion,
+      metadataSource: identity.metadataSource,
+    };
+  }
+
+  private async resolveCachedModIdentity(
+    fullPath: string,
+    filename: string,
+    size: number,
+    mtimeMs: number,
+  ): Promise<ModIdentity> {
+    const cached = this.modMetadataCache.get(fullPath);
+    if (cached && cached.size === size && cached.mtimeMs === mtimeMs) {
+      return cached.identity;
+    }
+
+    const identity = await this.resolveModIdentity(fullPath, filename);
+    this.modMetadataCache.set(fullPath, {
+      size,
+      mtimeMs,
+      identity,
+    });
+    return identity;
+  }
+
+  private invalidateModMetadataCacheEntry(fullPath: string): void {
+    this.modMetadataCache.delete(fullPath);
+  }
+
+  private async removeExistingModsForPluginKey(modsDir: string, pluginKey: string): Promise<void> {
+    const entries = await readdir(modsDir, { withFileTypes: true });
+    const removed: string[] = [];
+
+    for (const entry of entries) {
+      if (!entry.isFile()) {
+        continue;
+      }
+
+      const fullPath = path.join(modsDir, entry.name);
+      const fileStats = await stat(fullPath);
+      const identity = await this.resolveCachedModIdentity(fullPath, entry.name, fileStats.size, fileStats.mtimeMs);
+      if (identity.pluginKey !== pluginKey) {
+        continue;
+      }
+
+      await rm(fullPath, { force: true });
+      this.invalidateModMetadataCacheEntry(fullPath);
+      removed.push(entry.name);
+    }
+
+    if (removed.length > 0) {
+      this.pushTerminal(
+        `Removed older mod builds with the same plugin name: ${removed.join(", ")}`,
+        "system",
+      );
+    }
+  }
+
+  private async resolveModIdentity(archivePath: string, fallbackFilename: string): Promise<ModIdentity> {
+    const fromManifest = await this.readPluginManifestFromArchive(archivePath, fallbackFilename);
+    if (fromManifest?.name) {
+      return {
+        pluginKey: this.normalizePluginKey(fromManifest.name),
+        pluginName: fromManifest.name,
+        pluginVersion: fromManifest.version,
+        metadataSource: "manifest",
+      };
+    }
+
+    const fromFilename = this.parsePluginIdentityFromFilename(fallbackFilename);
+    if (fromFilename) {
+      return {
+        pluginKey: this.normalizePluginKey(fromFilename.pluginName),
+        pluginName: fromFilename.pluginName,
+        pluginVersion: fromFilename.pluginVersion,
+        metadataSource: "filename",
+      };
+    }
+
+    const baseName = this.stripModArtifactExtensions(fallbackFilename) || sanitizeFilename(fallbackFilename);
+    return {
+      pluginKey: this.normalizePluginKey(baseName),
+      pluginName: baseName,
+      pluginVersion: null,
+      metadataSource: "unknown",
+    };
+  }
+
+  private normalizePluginKey(value: string): string | null {
+    const normalized = value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "");
+    return normalized.length > 0 ? normalized : null;
+  }
+
+  private stripModArtifactExtensions(filename: string): string {
+    let baseName = sanitizeFilename(filename);
+    if (baseName.toLowerCase().endsWith(".disabled")) {
+      baseName = baseName.slice(0, -".disabled".length);
+    }
+    if (baseName.toLowerCase().endsWith(".jar")) {
+      baseName = baseName.slice(0, -".jar".length);
+    } else if (baseName.toLowerCase().endsWith(".zip")) {
+      baseName = baseName.slice(0, -".zip".length);
+    }
+    return baseName;
+  }
+
+  private parsePluginIdentityFromFilename(
+    filename: string,
+  ): { pluginName: string; pluginVersion: string | null } | null {
+    const baseName = this.stripModArtifactExtensions(filename);
+    if (!baseName) {
+      return null;
+    }
+
+    const underscoreMatch = /^(.+?)_([0-9][a-zA-Z0-9._-]*)$/.exec(baseName);
+    if (underscoreMatch) {
+      return {
+        pluginName: underscoreMatch[1] ?? baseName,
+        pluginVersion: underscoreMatch[2] ?? null,
+      };
+    }
+
+    const parts = baseName.split("-");
+    let versionIndex = -1;
+    for (let index = 1; index < parts.length; index += 1) {
+      if (/^[0-9]/.test(parts[index] ?? "")) {
+        versionIndex = index;
+        break;
+      }
+    }
+
+    if (versionIndex > 0) {
+      return {
+        pluginName: parts.slice(0, versionIndex).join("-"),
+        pluginVersion: parts.slice(versionIndex).join("-"),
+      };
+    }
+
+    return {
+      pluginName: baseName,
+      pluginVersion: null,
+    };
+  }
+
+  private async readPluginManifestFromArchive(
+    archivePath: string,
+    fallbackFilename?: string,
+  ): Promise<{ name: string; version: string | null } | null> {
+    const nameForTypeCheck = sanitizeFilename(fallbackFilename ?? path.basename(archivePath)).toLowerCase();
+    if (
+      !nameForTypeCheck.endsWith(".jar") &&
+      !nameForTypeCheck.endsWith(".zip") &&
+      !nameForTypeCheck.endsWith(".jar.disabled") &&
+      !nameForTypeCheck.endsWith(".zip.disabled")
+    ) {
+      return null;
+    }
+
+    const unzipBin = Bun.which("unzip");
+    if (!unzipBin) {
+      return null;
+    }
+
+    const listingResult = await this.runCommandCapture([unzipBin, "-Z1", archivePath]);
+    if (listingResult.code !== 0) {
+      return null;
+    }
+
+    const manifestCandidates = listingResult.stdout
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0)
+      .filter((line) => path.basename(line).toLowerCase() === "manifest.json")
+      .sort((left, right) => {
+        const leftDepth = left.split("/").length;
+        const rightDepth = right.split("/").length;
+        if (leftDepth !== rightDepth) {
+          return leftDepth - rightDepth;
+        }
+        return left.length - right.length;
+      });
+
+    for (const manifestPath of manifestCandidates) {
+      const contentResult = await this.runCommandCapture([unzipBin, "-p", archivePath, manifestPath]);
+      if (contentResult.code !== 0 || contentResult.stdout.trim().length === 0) {
+        continue;
+      }
+
+      try {
+        const parsed = JSON.parse(contentResult.stdout) as Record<string, unknown>;
+        const name = this.normalizeStringOrNull(parsed.Name) ?? this.normalizeStringOrNull(parsed.name);
+        if (!name) {
+          continue;
+        }
+
+        const version = this.normalizeStringOrNull(parsed.Version) ?? this.normalizeStringOrNull(parsed.version);
+        return {
+          name,
+          version,
+        };
+      } catch {
+        continue;
+      }
+    }
+
+    return null;
+  }
+
+  private async runCommandCapture(command: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
+    const proc = Bun.spawn(command, {
+      stdout: "pipe",
+      stderr: "pipe",
+      env: process.env,
+    });
+
+    const [code, stdout, stderr] = await Promise.all([
+      proc.exited,
+      proc.stdout ? new Response(proc.stdout).text() : Promise.resolve(""),
+      proc.stderr ? new Response(proc.stderr).text() : Promise.resolve(""),
+    ]);
+
+    return {
+      code,
+      stdout,
+      stderr,
+    };
   }
 
   async listLogFiles(): Promise<LogFileSummary[]> {
@@ -1586,15 +2492,22 @@ export class HytaleManager {
     await writeFile(path.join(destination, "metadata.json"), JSON.stringify(metadata, null, 2), "utf8");
 
     return {
-      id: backupId,
+      id: this.encodeManualBackupId(backupId),
+      name: backupId,
       createdAt: metadata.createdAt,
       note,
+      size: 0,
+      archived: false,
+      source: "manual",
+      format: "directory",
       itemCount: copiedItems.length,
     };
   }
 
   async listBackups(): Promise<BackupEntry[]> {
     await mkdir(config.app.backupsDir, { recursive: true });
+    await mkdir(config.hytale.backupsDir, { recursive: true });
+
     const entries = await readdir(config.app.backupsDir, { withFileTypes: true });
     const backups: BackupEntry[] = [];
 
@@ -1607,19 +2520,76 @@ export class HytaleManager {
       if (await pathExists(metadataPath)) {
         const metadataRaw = await readFile(metadataPath, "utf8");
         const metadata = JSON.parse(metadataRaw) as BackupMetadata;
+        const backupPath = path.join(config.app.backupsDir, entry.name);
+        const directoryStats = await stat(backupPath);
         backups.push({
-          id: metadata.id,
+          id: this.encodeManualBackupId(metadata.id),
+          name: metadata.id,
           createdAt: metadata.createdAt,
-          note: metadata.note,
+          note: metadata.note || "Manual dashboard backup",
+          size: directoryStats.size,
+          archived: false,
+          source: "manual",
+          format: "directory",
           itemCount: metadata.items.length,
         });
       } else {
         const dirStats = await stat(path.join(config.app.backupsDir, entry.name));
         backups.push({
-          id: entry.name,
+          id: this.encodeManualBackupId(entry.name),
+          name: entry.name,
           createdAt: dirStats.mtime.toISOString(),
-          note: "",
+          note: "Manual dashboard backup",
+          size: dirStats.size,
+          archived: false,
+          source: "manual",
+          format: "directory",
           itemCount: 0,
+        });
+      }
+    }
+
+    const nativeRootEntries = await readdir(config.hytale.backupsDir, { withFileTypes: true });
+    for (const entry of nativeRootEntries) {
+      if (!entry.isFile() || !entry.name.toLowerCase().endsWith(".zip")) {
+        continue;
+      }
+
+      const fullPath = path.join(config.hytale.backupsDir, entry.name);
+      const fileStats = await stat(fullPath);
+      backups.push({
+        id: this.encodeNativeBackupId(entry.name),
+        name: entry.name,
+        createdAt: fileStats.mtime.toISOString(),
+        note: "Native Hytale backup",
+        size: fileStats.size,
+        archived: false,
+        source: "native",
+        format: "zip",
+        itemCount: 1,
+      });
+    }
+
+    const archiveDir = path.join(config.hytale.backupsDir, "archive");
+    if (await pathExists(archiveDir)) {
+      const archiveEntries = await readdir(archiveDir, { withFileTypes: true });
+      for (const entry of archiveEntries) {
+        if (!entry.isFile() || !entry.name.toLowerCase().endsWith(".zip")) {
+          continue;
+        }
+
+        const fullPath = path.join(archiveDir, entry.name);
+        const fileStats = await stat(fullPath);
+        backups.push({
+          id: this.encodeNativeBackupId(`archive/${entry.name}`),
+          name: entry.name,
+          createdAt: fileStats.mtime.toISOString(),
+          note: "Archived native Hytale backup",
+          size: fileStats.size,
+          archived: true,
+          source: "native",
+          format: "zip",
+          itemCount: 1,
         });
       }
     }
@@ -1629,14 +2599,13 @@ export class HytaleManager {
   }
 
   async deleteBackup(id: string): Promise<void> {
-    const safeId = sanitizeFilename(id);
-    const target = path.join(config.app.backupsDir, safeId);
-
-    if (!(await pathExists(target))) {
-      throw new AppError(404, "Backup not found.");
+    const reference = await this.resolveBackupReference(id);
+    if (reference.kind === "manual") {
+      await rm(reference.path, { recursive: true, force: true });
+      return;
     }
 
-    await rm(target, { recursive: true, force: true });
+    await rm(reference.path, { force: true });
   }
 
   async restoreBackup(id: string): Promise<void> {
@@ -1644,30 +2613,213 @@ export class HytaleManager {
       throw new AppError(409, "Server must be stopped before restoring backup.");
     }
 
-    const safeId = sanitizeFilename(id);
-    const source = path.join(config.app.backupsDir, safeId);
-    if (!(await pathExists(source))) {
-      throw new AppError(404, "Backup not found.");
+    const reference = await this.resolveBackupReference(id);
+
+    if (reference.kind === "manual") {
+      const entries = await readdir(reference.path, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.name === "metadata.json") {
+          continue;
+        }
+
+        const sourcePath = path.join(reference.path, entry.name);
+        const destinationPath = path.join(config.hytale.serverDir, entry.name);
+        await rm(destinationPath, { recursive: true, force: true });
+
+        if (entry.isDirectory()) {
+          await cp(sourcePath, destinationPath, { recursive: true, force: true });
+        } else {
+          await copyFile(sourcePath, destinationPath);
+        }
+      }
+
+      this.pushTerminal(`Manual backup restored: ${reference.name}`, "system");
+      return;
     }
 
-    const entries = await readdir(source, { withFileTypes: true });
+    const restoreWorkspace = path.join(config.app.dataDir, `restore-${timestampId()}-${randomUUID()}`);
+    await mkdir(restoreWorkspace, { recursive: true });
+
+    try {
+      this.pushTerminal(`Restoring native backup: ${reference.name}`, "system");
+      await this.extractZipFile(reference.path, restoreWorkspace);
+
+      const universeSource = await this.resolveUniverseDirectoryFromBackupExtract(restoreWorkspace);
+      if (!universeSource) {
+        throw new AppError(
+          500,
+          "Unable to locate a universe directory in the backup archive. Restore expects a backup ZIP with universe data.",
+        );
+      }
+
+      const universeDestination = path.join(config.hytale.serverDir, "universe");
+      await rm(universeDestination, { recursive: true, force: true });
+      await cp(universeSource, universeDestination, { recursive: true, force: true });
+      this.pushTerminal(`Native backup restored into ${universeDestination}`, "system");
+    } finally {
+      await rm(restoreWorkspace, { recursive: true, force: true });
+    }
+  }
+
+  private encodeManualBackupId(name: string): string {
+    return `manual:${name}`;
+  }
+
+  private encodeNativeBackupId(relativePath: string): string {
+    return `native:${relativePath.replace(/\\/g, "/")}`;
+  }
+
+  private async resolveBackupReference(id: string): Promise<
+    | { kind: "manual"; name: string; path: string }
+    | { kind: "native"; name: string; path: string; archived: boolean }
+  > {
+    const value = id.trim();
+    if (!value) {
+      throw new AppError(400, "Backup id is required.");
+    }
+
+    if (value.startsWith("manual:")) {
+      const name = sanitizeFilename(value.slice("manual:".length));
+      const backupPath = path.join(config.app.backupsDir, name);
+      if (!(await pathExists(backupPath))) {
+        throw new AppError(404, "Backup not found.");
+      }
+      return { kind: "manual", name, path: backupPath };
+    }
+
+    if (value.startsWith("native:")) {
+      const relativePath = value.slice("native:".length).trim();
+      const parsed = this.resolveNativeBackupPath(relativePath);
+      if (!(await pathExists(parsed.path))) {
+        throw new AppError(404, "Backup not found.");
+      }
+      return parsed;
+    }
+
+    const legacyManualName = sanitizeFilename(value);
+    const legacyManualPath = path.join(config.app.backupsDir, legacyManualName);
+    if (await pathExists(legacyManualPath)) {
+      return { kind: "manual", name: legacyManualName, path: legacyManualPath };
+    }
+
+    try {
+      const legacyNative = this.resolveNativeBackupPath(legacyManualName);
+      if (await pathExists(legacyNative.path)) {
+        return legacyNative;
+      }
+    } catch {
+      // Ignore and continue to other legacy id patterns.
+    }
+
+    try {
+      const legacyArchived = this.resolveNativeBackupPath(`archive/${legacyManualName}`);
+      if (await pathExists(legacyArchived.path)) {
+        return legacyArchived;
+      }
+    } catch {
+      // Ignore and finish with a not found error below.
+    }
+
+    throw new AppError(404, "Backup not found.");
+  }
+
+  private resolveNativeBackupPath(relativePath: string): { kind: "native"; name: string; path: string; archived: boolean } {
+    const normalized = relativePath.replace(/\\/g, "/").replace(/^\/+/, "");
+    if (!normalized || normalized.includes("..")) {
+      throw new AppError(400, "Invalid backup id.");
+    }
+
+    const segments = normalized
+      .split("/")
+      .map((segment) => segment.trim())
+      .filter(Boolean);
+
+    if (segments.length === 0 || segments.length > 2) {
+      throw new AppError(400, "Invalid backup id.");
+    }
+
+    const isArchived = segments[0] === "archive";
+    if (segments.length === 2 && !isArchived) {
+      throw new AppError(400, "Invalid backup id.");
+    }
+
+    if (segments.some((segment) => !/^[a-zA-Z0-9._-]+$/.test(segment))) {
+      throw new AppError(400, "Invalid backup id.");
+    }
+
+    const name = segments[segments.length - 1];
+    if (!name.toLowerCase().endsWith(".zip")) {
+      throw new AppError(400, "Only ZIP backups are supported for native backups.");
+    }
+
+    const targetPath = path.resolve(config.hytale.backupsDir, ...segments);
+    const relative = path.relative(config.hytale.backupsDir, targetPath);
+    if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+      throw new AppError(400, "Invalid backup id.");
+    }
+
+    return {
+      kind: "native",
+      name,
+      path: targetPath,
+      archived: isArchived,
+    };
+  }
+
+  private async resolveUniverseDirectoryFromBackupExtract(restoreWorkspace: string): Promise<string | null> {
+    const directUniverse = path.join(restoreWorkspace, "universe");
+    if (await this.isDirectory(directUniverse)) {
+      return directUniverse;
+    }
+
+    if (await this.looksLikeUniverseDirectory(restoreWorkspace)) {
+      return restoreWorkspace;
+    }
+
+    const entries = await readdir(restoreWorkspace, { withFileTypes: true });
     for (const entry of entries) {
-      if (entry.name === "metadata.json") {
+      if (!entry.isDirectory()) {
         continue;
       }
 
-      const sourcePath = path.join(source, entry.name);
-      const destinationPath = path.join(config.hytale.serverDir, entry.name);
-      await rm(destinationPath, { recursive: true, force: true });
+      const childPath = path.join(restoreWorkspace, entry.name);
+      const childUniverse = path.join(childPath, "universe");
+      if (await this.isDirectory(childUniverse)) {
+        return childUniverse;
+      }
 
-      if (entry.isDirectory()) {
-        await cp(sourcePath, destinationPath, { recursive: true, force: true });
-      } else {
-        await copyFile(sourcePath, destinationPath);
+      if (await this.looksLikeUniverseDirectory(childPath)) {
+        return childPath;
       }
     }
 
-    this.pushTerminal(`Backup ${safeId} restored`, "system");
+    return null;
+  }
+
+  private async looksLikeUniverseDirectory(directoryPath: string): Promise<boolean> {
+    if (!(await this.isDirectory(directoryPath))) {
+      return false;
+    }
+
+    const entries = await readdir(directoryPath, { withFileTypes: true });
+    if (entries.some((entry) => entry.isDirectory() && entry.name === "worlds")) {
+      return true;
+    }
+
+    return entries.some((entry) => entry.isFile() && entry.name === "memories.json");
+  }
+
+  private async isDirectory(directoryPath: string): Promise<boolean> {
+    if (!(await pathExists(directoryPath))) {
+      return false;
+    }
+
+    try {
+      const details = await stat(directoryPath);
+      return details.isDirectory();
+    } catch {
+      return false;
+    }
   }
 
   private async installFromDownloader(patchline: string, manifest: VersionManifest): Promise<void> {
@@ -3023,8 +4175,8 @@ export class HytaleManager {
     }
 
     await rename(sourcePath, targetPath);
-    await this.renameCurseForgeTrackedFilename(from, to);
-    await this.renameNexusTrackedFilename(from, to);
+    this.invalidateModMetadataCacheEntry(sourcePath);
+    this.invalidateModMetadataCacheEntry(targetPath);
   }
 
   private async getCurseForgeConfig(): Promise<CurseForgeRuntimeConfig | null> {
@@ -4196,6 +5348,7 @@ export class HytaleManager {
       status: this.status,
       startedAt: this.startedAt,
       lastExitCode: this.lastExitCode,
+      metricsSampling: this.status === "running" || this.status === "starting",
     });
   }
 }
