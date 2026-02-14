@@ -1,4 +1,4 @@
-import dashboardPage from "./client/index.html";
+import dashboardPage from "./index.html";
 import type { ServerWebSocket } from "bun";
 import { clearSessionCookie, getSessionUserFromRequest, login, logoutFromRequest, registerFromInvite, setupOwner } from "./auth";
 import { config, ensureDirectories } from "./config";
