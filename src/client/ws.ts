@@ -9,6 +9,27 @@ type PendingRequest = {
 type EventListener = (event: string, payload: unknown) => void;
 type ConnectionListener = (connected: boolean) => void;
 
+function createRequestId(): string {
+  const cryptoApi = globalThis.crypto;
+  if (typeof cryptoApi?.randomUUID === "function") {
+    return cryptoApi.randomUUID();
+  }
+
+  if (typeof cryptoApi?.getRandomValues === "function") {
+    const bytes = new Uint8Array(16);
+    cryptoApi.getRandomValues(bytes);
+
+    // RFC 4122 version/variant bits.
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+
+    const hex = Array.from(bytes, (value) => value.toString(16).padStart(2, "0")).join("");
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  }
+
+  return `req-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
 export class DashboardSocket {
   private ws: WebSocket | null = null;
   private readonly pending = new Map<string, PendingRequest>();
@@ -95,7 +116,7 @@ export class DashboardSocket {
       throw new Error("Realtime channel is not connected.");
     }
 
-    const id = crypto.randomUUID();
+    const id = createRequestId();
     const response = new Promise<T>((resolve, reject) => {
       const timeout = window.setTimeout(() => {
         this.pending.delete(id);

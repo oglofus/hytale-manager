@@ -1,5 +1,6 @@
 import dashboardPage from "./index.html";
 import type { ServerWebSocket } from "bun";
+import { randomUUID } from "node:crypto";
 import { clearSessionCookie, getSessionUserFromRequest, login, logoutFromRequest, registerFromInvite, setupOwner } from "./auth";
 import { config, ensureDirectories } from "./config";
 import { hasAnyUsers, PublicUser } from "./db";
@@ -88,7 +89,7 @@ async function sendBootstrap(socket: ServerWebSocket<SocketData>): Promise<void>
 }
 
 async function dispatchCommand(socket: ServerWebSocket<SocketData>, command: CommandRequest): Promise<void> {
-  const requestId = command.id ?? crypto.randomUUID();
+  const requestId = command.id ?? randomUUID();
 
   try {
     if (!command.action) {
@@ -735,7 +736,7 @@ const server = Bun.serve<SocketData>({
       try {
         command = JSON.parse(raw) as CommandRequest;
       } catch {
-        sendAck(socket, crypto.randomUUID(), false, {
+        sendAck(socket, randomUUID(), false, {
           error: "Invalid command JSON",
           status: 400,
         });
