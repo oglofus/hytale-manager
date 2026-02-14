@@ -23,9 +23,18 @@ const uploadsDir = resolveFromCwd(Bun.env.UPLOADS_DIR ?? path.join(dataDir, "upl
 const toolsDir = resolveFromCwd(Bun.env.TOOLS_DIR ?? path.join(dataDir, "tools"));
 const publicHost = host === "0.0.0.0" || host === "::" ? "localhost" : host;
 const publicBaseUrl = Bun.env.PUBLIC_BASE_URL ?? `http://${publicHost}:${port}`;
+
+const defaultSessionCookieSecure = (() => {
+  try {
+    return new URL(publicBaseUrl).protocol === "https:";
+  } catch {
+    return false;
+  }
+})();
+
 const sessionCookieSecure = Bun.env.SESSION_COOKIE_SECURE
   ? Bun.env.SESSION_COOKIE_SECURE === "true"
-  : Bun.env.NODE_ENV === "production";
+  : defaultSessionCookieSecure;
 
 const smtp = Bun.env.SMTP_HOST && Bun.env.SMTP_USER && Bun.env.SMTP_PASS && Bun.env.SMTP_FROM
   ? {

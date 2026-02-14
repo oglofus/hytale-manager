@@ -113,7 +113,7 @@ Auth/session:
 
 - `SESSION_TTL_HOURS` (default: `336`)
 - `INVITE_TTL_HOURS` (default: `72`)
-- `SESSION_COOKIE_SECURE` (default: `true` when `NODE_ENV=production`, otherwise `false`) - set to `false` to allow HTTP cookies on a trusted local network.
+- `SESSION_COOKIE_SECURE` (default: `true` when `PUBLIC_BASE_URL` is `https://...`, otherwise `false`) - override cookie security behavior if needed.
   - Automatically set from `--listen http://...` (`false`) or `--listen https://...` (`true`).
 
 Hytale runtime/install:

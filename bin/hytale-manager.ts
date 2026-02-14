@@ -32,6 +32,7 @@ async function ensureProductionBundle(packageRoot: string): Promise<void> {
     outdir: path.join(packageRoot, "dist"),
     target: "bun",
     minify: true,
+    publicPath: "/",
     plugins: [tailwind],
   });
 
