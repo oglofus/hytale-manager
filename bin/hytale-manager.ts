@@ -1,7 +1,9 @@
 #!/usr/bin/env bun
 
+import tailwind from "bun-plugin-tailwind";
+import { rm } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 // Preserve the user's launch directory for runtime data defaults.
 const launchCwd = process.cwd();
@@ -16,6 +18,30 @@ type ListenConfig = {
   publicBaseUrl?: string;
   sessionCookieSecure?: string;
 };
+
+async function ensureProductionBundle(packageRoot: string): Promise<void> {
+  const distServerPath = path.join(packageRoot, "dist", "server.js");
+  if (await Bun.file(distServerPath).exists()) {
+    return;
+  }
+
+  console.log("Preparing production bundle...");
+  await rm(path.join(packageRoot, "dist"), { recursive: true, force: true });
+  const result = await Bun.build({
+    entrypoints: [path.join(packageRoot, "src", "server.ts")],
+    outdir: path.join(packageRoot, "dist"),
+    target: "bun",
+    minify: true,
+    plugins: [tailwind],
+  });
+
+  if (!result.success) {
+    for (const log of result.logs) {
+      console.error(log);
+    }
+    throw new Error("Failed to build production bundle.");
+  }
+}
 
 function parsePort(raw: string): string {
   const num = Number(raw);
@@ -171,4 +197,9 @@ try {
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 process.chdir(packageRoot);
 
-await import("../src/server.ts");
+if (process.env.NODE_ENV === "development") {
+  await import("../src/server.ts");
+} else {
+  await ensureProductionBundle(packageRoot);
+  await import(pathToFileURL(path.join(packageRoot, "dist", "server.js")).href);
+}
