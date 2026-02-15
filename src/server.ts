@@ -61,11 +61,12 @@ function sendAck(
 }
 
 async function sendBootstrap(socket: ServerWebSocket<SocketData>): Promise<void> {
-  const [serverState, mods, backups, logs] = await Promise.all([
+  const [serverState, mods, backups, logs, whitelist] = await Promise.all([
     manager.snapshot(),
     manager.listMods(),
     manager.listBackups(),
     manager.listLogFiles(),
+    manager.listWhitelist(),
   ]);
 
   socket.send(
@@ -78,6 +79,7 @@ async function sendBootstrap(socket: ServerWebSocket<SocketData>): Promise<void>
         mods,
         backups,
         logs,
+        whitelist,
         invites: socket.data.user.role === "owner" ? getInviteSummaries() : [],
       },
     }),
@@ -266,6 +268,36 @@ async function dispatchCommand(socket: ServerWebSocket<SocketData>, command: Com
             content: await manager.readLogFile(name, tail),
           },
         });
+        return;
+      }
+
+      case "whitelist.list": {
+        sendAck(socket, requestId, true, { data: await manager.listWhitelist() });
+        return;
+      }
+
+      case "whitelist.setEnabled": {
+        assertOwner(socket.data.user);
+        const enabled = command.payload?.enabled;
+        if (typeof enabled !== "boolean") {
+          commandError("enabled must be a boolean.");
+        }
+
+        sendAck(socket, requestId, true, { data: await manager.setWhitelistEnabled(enabled) });
+        return;
+      }
+
+      case "whitelist.add": {
+        assertOwner(socket.data.user);
+        const value = (command.payload?.value as string | undefined) ?? "";
+        sendAck(socket, requestId, true, { data: await manager.addWhitelistEntry(value) });
+        return;
+      }
+
+      case "whitelist.remove": {
+        assertOwner(socket.data.user);
+        const uuid = (command.payload?.uuid as string | undefined) ?? "";
+        sendAck(socket, requestId, true, { data: await manager.removeWhitelistEntry(uuid) });
         return;
       }
 

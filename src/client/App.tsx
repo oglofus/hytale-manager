@@ -36,6 +36,7 @@ import {
   ServerMetricPoint,
   ServerState,
   User,
+  WhitelistState,
 } from "./types";
 import { DashboardSocket } from "./ws";
 
@@ -67,6 +68,21 @@ function formatRate(bytesPerSecond: number | null): string {
     return "-";
   }
   return `${formatBytes(Math.max(0, bytesPerSecond))}/s`;
+}
+
+function formatWhitelistSource(
+  source: WhitelistState["entries"][number]["source"],
+): string {
+  if (source === "local-player") {
+    return "From local player data";
+  }
+  if (source === "cache") {
+    return "From cached lookup";
+  }
+  if (source === "remote") {
+    return "From remote lookup";
+  }
+  return "Username unresolved";
 }
 
 function normalizePluginKey(value: string): string | null {
@@ -190,6 +206,7 @@ export function App() {
   const [mods, setMods] = useState<ModEntry[]>([]);
   const [backups, setBackups] = useState<BackupEntry[]>([]);
   const [logs, setLogs] = useState<LogFileSummary[]>([]);
+  const [whitelist, setWhitelist] = useState<WhitelistState | null>(null);
   const [selectedLog, setSelectedLog] = useState<string>("__terminal__");
   const [logContent, setLogContent] = useState("");
 
@@ -210,6 +227,7 @@ export function App() {
   const [invitePassword, setInvitePassword] = useState("");
 
   const [inviteEmail, setInviteEmail] = useState("");
+  const [whitelistInput, setWhitelistInput] = useState("");
   const [backupNote, setBackupNote] = useState("");
   const [bindPortInput, setBindPortInput] = useState("25565");
   const [autoBackupEnabledInput, setAutoBackupEnabledInput] = useState(true);
@@ -310,6 +328,7 @@ export function App() {
         setMods(data.mods);
         setBackups(data.backups);
         setLogs(data.logs);
+        setWhitelist(data.whitelist);
         setInvites(data.invites);
         setStatus("Realtime connected.");
         return;
@@ -401,6 +420,15 @@ export function App() {
             ...partial,
           };
         });
+        return;
+      }
+
+      if (event === "whitelist.state") {
+        const nextWhitelist = (payload as { whitelist?: WhitelistState })
+          .whitelist;
+        if (nextWhitelist) {
+          setWhitelist(nextWhitelist);
+        }
       }
     });
 
@@ -609,6 +637,11 @@ export function App() {
     setMods(items);
   }
 
+  async function refreshWhitelist(): Promise<void> {
+    const next = await request<WhitelistState>("whitelist.list");
+    setWhitelist(next);
+  }
+
   async function handleLogin(event: FormEvent) {
     event.preventDefault();
     setBusy(true);
@@ -706,6 +739,7 @@ export function App() {
       setMods([]);
       setBackups([]);
       setLogs([]);
+      setWhitelist(null);
       setInvites([]);
       setStatus("Logged out.");
     } catch (logoutError) {
@@ -1039,6 +1073,68 @@ export function App() {
       setMods(next);
     } catch (modError) {
       setError((modError as Error).message);
+    }
+  }
+
+  async function updateWhitelistEnabled(enabled: boolean) {
+    if (user?.role !== "owner") {
+      setError("Only the owner can change whitelist settings.");
+      return;
+    }
+
+    setBusy(true);
+    setError("");
+    try {
+      const next = await request<WhitelistState>("whitelist.setEnabled", {
+        enabled,
+      });
+      setWhitelist(next);
+      setStatus(`Whitelist ${next.enabled ? "enabled" : "disabled"}.`);
+    } catch (whitelistError) {
+      setError((whitelistError as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function addWhitelistEntry(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (user?.role !== "owner") {
+      setError("Only the owner can add whitelist entries.");
+      return;
+    }
+
+    const value = whitelistInput.trim();
+    if (!value) {
+      return;
+    }
+
+    setBusy(true);
+    setError("");
+    try {
+      const next = await request<WhitelistState>("whitelist.add", { value });
+      setWhitelist(next);
+      setWhitelistInput("");
+      setStatus("Whitelist entry added.");
+    } catch (whitelistError) {
+      setError((whitelistError as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeWhitelistEntry(uuid: string) {
+    if (user?.role !== "owner") {
+      setError("Only the owner can remove whitelist entries.");
+      return;
+    }
+
+    try {
+      const next = await request<WhitelistState>("whitelist.remove", { uuid });
+      setWhitelist(next);
+      setStatus("Whitelist entry removed.");
+    } catch (whitelistError) {
+      setError((whitelistError as Error).message);
     }
   }
 
@@ -1856,6 +1952,102 @@ export function App() {
                     </div>
                   </li>
                 ))}
+              </ul>
+            </CardContent>
+          </Card>
+
+          <Card className="xl:col-span-6">
+            <CardHeader>
+              <CardTitle>Whitelist</CardTitle>
+              <CardDescription>
+                Manage allowed players by UUID or username.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <label className="flex items-center justify-between gap-3 rounded-none border p-2 text-sm">
+                <span>Whitelist enabled</span>
+                <input
+                  type="checkbox"
+                  checked={whitelist?.enabled ?? false}
+                  onChange={(event) =>
+                    void updateWhitelistEnabled(event.target.checked)
+                  }
+                  disabled={busy || user.role !== "owner"}
+                />
+              </label>
+
+              <form
+                onSubmit={addWhitelistEntry}
+                className="flex flex-wrap items-center gap-2"
+              >
+                <Input
+                  type="text"
+                  value={whitelistInput}
+                  onChange={(event) => setWhitelistInput(event.target.value)}
+                  placeholder="username or uuid"
+                  disabled={busy || user.role !== "owner"}
+                />
+                <Button
+                  type="submit"
+                  size="sm"
+                  disabled={busy || user.role !== "owner"}
+                >
+                  Add
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => void refreshWhitelist()}
+                  disabled={busy}
+                >
+                  Refresh
+                </Button>
+              </form>
+
+              <p className="text-xs text-muted-foreground">
+                UUIDs are stored in <code>whitelist.json</code>. Username
+                labels are resolved from local player data, cached lookups, or
+                remote lookup.
+              </p>
+
+              <ul className="max-h-80 space-y-2 overflow-auto">
+                {(whitelist?.entries ?? []).map((entry) => (
+                  <li
+                    key={entry.uuid}
+                    className="flex items-center justify-between gap-3 rounded-none border p-3"
+                  >
+                    <div className="min-w-0">
+                      <p className="truncate font-medium">
+                        {entry.username ?? "Unknown player"}
+                      </p>
+                      <p className="truncate text-xs text-muted-foreground">
+                        {entry.uuid}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {formatWhitelistSource(entry.source)}
+                        {entry.lastSeenAt
+                          ? ` | Updated ${formatDate(entry.lastSeenAt)}`
+                          : ""}
+                      </p>
+                    </div>
+                    {user.role === "owner" && (
+                      <Button
+                        size="sm"
+                        variant="destructive"
+                        onClick={() => void removeWhitelistEntry(entry.uuid)}
+                        disabled={busy}
+                      >
+                        Remove
+                      </Button>
+                    )}
+                  </li>
+                ))}
+                {(whitelist?.entries.length ?? 0) === 0 && (
+                  <li className="rounded-none border p-3 text-sm text-muted-foreground">
+                    No players in whitelist.
+                  </li>
+                )}
               </ul>
             </CardContent>
           </Card>

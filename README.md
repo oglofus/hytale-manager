@@ -17,6 +17,11 @@ A Bun-first web dashboard for managing a single Hytale server instance.
   - Memory usage (RSS/virtual) over time.
   - Network receive/transmit throughput over time.
 - Log file browsing (`logs/`) and terminal history view.
+- Whitelist management:
+  - Toggle whitelist enabled/disabled.
+  - Add/remove whitelist entries from the dashboard.
+  - Accepts UUID or username input (username resolves to UUID).
+  - Displays username labels for UUID entries when available.
 - Mod management:
   - Upload `.jar` / `.zip` mods over WebSocket.
   - Sync a local mods folder: only top-level `.jar` / `.zip` files are considered (subfolders and other files are ignored); server mods are reconciled to match.
@@ -212,6 +217,12 @@ Java runtime behavior:
 - Managed runtime is stored under `HYTALE_MANAGED_JAVA_DIR`.
 - Runtime defaults are `-Xms2048m -Xmx4096m` (editable in dashboard runtime settings).
 - Extra JVM flags can be set in dashboard runtime settings (for example GC tuning flags).
+
+Whitelist behavior:
+
+- `whitelist.json` is managed directly in `HYTALE_SERVER_DIR`.
+- The file remains UUID-based; dashboard shows usernames as labels.
+- Username labels are resolved from local player data (`universe/players`), local cache, and a best-effort remote lookup.
 
 ## Security notes
 

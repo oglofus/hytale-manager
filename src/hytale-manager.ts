@@ -178,11 +178,37 @@ export type BackupEntry = {
   itemCount: number;
 };
 
+export type WhitelistEntry = {
+  uuid: string;
+  username: string | null;
+  lastSeenAt: string | null;
+  source: "local-player" | "cache" | "remote" | "unknown";
+};
+
+export type WhitelistState = {
+  enabled: boolean;
+  entries: WhitelistEntry[];
+};
+
 type BackupMetadata = {
   id: string;
   createdAt: string;
   note: string;
   items: string[];
+};
+
+type WhitelistFileData = {
+  enabled: boolean;
+  list: string[];
+};
+
+type PlayerNameCacheEntry = {
+  username: string;
+  updatedAt: string;
+};
+
+type PlayerNameCacheData = {
+  byUuid: Record<string, PlayerNameCacheEntry>;
 };
 
 type InstalledServerMetadata = {
@@ -1778,6 +1804,554 @@ export class HytaleManager {
 
     await rm(target, { force: true });
     this.invalidateModMetadataCacheEntry(target);
+  }
+
+  async listWhitelist(): Promise<WhitelistState> {
+    const whitelist = await this.readWhitelistFile();
+    const localProfiles = await this.readLocalPlayerProfileIndex();
+    const cache = await this.readPlayerNameCache();
+    let cacheChanged = false;
+
+    const entries: WhitelistEntry[] = [];
+    let remoteLookupBudget = 3;
+
+    for (const uuid of whitelist.list) {
+      const local = localProfiles.get(uuid);
+      if (local) {
+        const cached = cache.get(uuid);
+        if (!cached || cached.username !== local.username) {
+          cache.set(uuid, {
+            username: local.username,
+            updatedAt: new Date().toISOString(),
+          });
+          cacheChanged = true;
+        }
+
+        entries.push({
+          uuid,
+          username: local.username,
+          lastSeenAt: local.lastSeenAt,
+          source: "local-player",
+        });
+        continue;
+      }
+
+      const cached = cache.get(uuid);
+      if (cached) {
+        entries.push({
+          uuid,
+          username: cached.username,
+          lastSeenAt: cached.updatedAt,
+          source: "cache",
+        });
+        continue;
+      }
+
+      if (remoteLookupBudget > 0) {
+        remoteLookupBudget -= 1;
+        const resolved = await this.lookupHytalePlayerIdentity(uuid);
+        if (resolved && resolved.uuid === uuid) {
+          cache.set(uuid, {
+            username: resolved.username,
+            updatedAt: new Date().toISOString(),
+          });
+          cacheChanged = true;
+          entries.push({
+            uuid,
+            username: resolved.username,
+            lastSeenAt: null,
+            source: "remote",
+          });
+          continue;
+        }
+      }
+
+      entries.push({
+        uuid,
+        username: null,
+        lastSeenAt: null,
+        source: "unknown",
+      });
+    }
+
+    if (cacheChanged) {
+      await this.writePlayerNameCache(cache);
+    }
+
+    return {
+      enabled: whitelist.enabled,
+      entries,
+    };
+  }
+
+  async setWhitelistEnabled(enabled: boolean): Promise<WhitelistState> {
+    if (typeof enabled !== "boolean") {
+      throw new AppError(400, "enabled must be a boolean.");
+    }
+
+    const whitelist = await this.readWhitelistFile();
+    whitelist.enabled = enabled;
+    await this.writeWhitelistFile(whitelist);
+
+    this.pushTerminal(`Whitelist ${enabled ? "enabled" : "disabled"}.`, "system");
+    const next = await this.listWhitelist();
+    this.broadcast("whitelist.state", { whitelist: next });
+    return next;
+  }
+
+  async addWhitelistEntry(value: string): Promise<WhitelistState> {
+    const input = value.trim();
+    if (!input) {
+      throw new AppError(400, "username or UUID is required.");
+    }
+
+    const resolved = await this.resolveUuidFromWhitelistInput(input);
+    const whitelist = await this.readWhitelistFile();
+
+    if (!whitelist.list.includes(resolved.uuid)) {
+      whitelist.list.push(resolved.uuid);
+      await this.writeWhitelistFile(whitelist);
+      this.pushTerminal(
+        resolved.username
+          ? `Whitelist added: ${resolved.username} (${resolved.uuid})`
+          : `Whitelist added: ${resolved.uuid}`,
+        "system",
+      );
+    }
+
+    const next = await this.listWhitelist();
+    this.broadcast("whitelist.state", { whitelist: next });
+    return next;
+  }
+
+  async removeWhitelistEntry(uuidInput: string): Promise<WhitelistState> {
+    const normalizedUuid = this.normalizeUuid(uuidInput);
+    if (!normalizedUuid) {
+      throw new AppError(400, "uuid must be a valid UUID.");
+    }
+
+    const whitelist = await this.readWhitelistFile();
+    const before = whitelist.list.length;
+    whitelist.list = whitelist.list.filter((uuid) => uuid !== normalizedUuid);
+    if (whitelist.list.length === before) {
+      throw new AppError(404, "Whitelist entry not found.");
+    }
+
+    await this.writeWhitelistFile(whitelist);
+    this.pushTerminal(`Whitelist removed: ${normalizedUuid}`, "system");
+
+    const next = await this.listWhitelist();
+    this.broadcast("whitelist.state", { whitelist: next });
+    return next;
+  }
+
+  private getWhitelistFilePath(): string {
+    return path.join(config.hytale.serverDir, "whitelist.json");
+  }
+
+  private getPlayerNameCachePath(): string {
+    return path.join(config.app.dataDir, ".hytale-player-name-cache.json");
+  }
+
+  private async readWhitelistFile(): Promise<WhitelistFileData> {
+    const filePath = this.getWhitelistFilePath();
+    if (!(await pathExists(filePath))) {
+      const initial: WhitelistFileData = { enabled: false, list: [] };
+      await this.writeWhitelistFile(initial);
+      return initial;
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(await readFile(filePath, "utf8"));
+    } catch {
+      throw new AppError(500, "whitelist.json is not valid JSON.");
+    }
+
+    const record = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : {};
+    const enabled = typeof record.enabled === "boolean" ? record.enabled : false;
+    const rawList = Array.isArray(record.list) ? record.list : [];
+    const list: string[] = [];
+    const seen = new Set<string>();
+
+    for (const item of rawList) {
+      if (typeof item !== "string") {
+        continue;
+      }
+      const uuid = this.normalizeUuid(item);
+      if (!uuid || seen.has(uuid)) {
+        continue;
+      }
+      seen.add(uuid);
+      list.push(uuid);
+    }
+
+    return { enabled, list };
+  }
+
+  private async writeWhitelistFile(value: WhitelistFileData): Promise<void> {
+    const data = {
+      enabled: value.enabled,
+      list: value.list,
+    };
+    await writeFile(this.getWhitelistFilePath(), JSON.stringify(data), "utf8");
+  }
+
+  private async readLocalPlayerProfileIndex(): Promise<Map<string, { username: string; lastSeenAt: string | null }>> {
+    const index = new Map<string, { username: string; lastSeenAt: string | null }>();
+    const playersDir = path.join(config.hytale.serverDir, "universe", "players");
+    if (!(await pathExists(playersDir))) {
+      return index;
+    }
+
+    const entries = await readdir(playersDir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isFile() || !entry.name.toLowerCase().endsWith(".json")) {
+        continue;
+      }
+
+      const uuid = this.normalizeUuid(entry.name.slice(0, -".json".length));
+      if (!uuid) {
+        continue;
+      }
+
+      const profilePath = path.join(playersDir, entry.name);
+      try {
+        const parsed = JSON.parse(await readFile(profilePath, "utf8")) as unknown;
+        const username = this.extractUsernameFromPlayerProfile(parsed);
+        if (!username) {
+          continue;
+        }
+
+        const profileStat = await stat(profilePath);
+        index.set(uuid, {
+          username,
+          lastSeenAt: profileStat.mtime.toISOString(),
+        });
+      } catch {
+        continue;
+      }
+    }
+
+    return index;
+  }
+
+  private extractUsernameFromPlayerProfile(payload: unknown): string | null {
+    if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+      return null;
+    }
+
+    const root = payload as Record<string, unknown>;
+    const directCandidates: unknown[] = [
+      root.Username,
+      root.username,
+      root.PlayerName,
+      root.playerName,
+      root.DisplayName,
+      root.displayName,
+      root.Name,
+      root.name,
+      this.readNestedValue(root, ["Nameplate", "Text"]),
+      this.readNestedValue(root, ["Nameplate", "text"]),
+      this.readNestedValue(root, ["Nameplate", "Name"]),
+      this.readNestedValue(root, ["Nameplate", "name"]),
+      this.readNestedValue(root, ["DisplayName", "Text"]),
+      this.readNestedValue(root, ["DisplayName", "text"]),
+      this.readNestedValue(root, ["DisplayName", "Name"]),
+      this.readNestedValue(root, ["DisplayName", "name"]),
+    ];
+
+    for (const candidate of directCandidates) {
+      const username = this.normalizePlayerUsername(candidate);
+      if (username) {
+        return username;
+      }
+    }
+
+    return this.findUsernameInNestedProfile(payload, 0);
+  }
+
+  private findUsernameInNestedProfile(payload: unknown, depth: number): string | null {
+    if (depth > 5 || payload === null || payload === undefined) {
+      return null;
+    }
+
+    if (typeof payload === "string") {
+      return this.normalizePlayerUsername(payload);
+    }
+
+    if (Array.isArray(payload)) {
+      for (const value of payload) {
+        const resolved = this.findUsernameInNestedProfile(value, depth + 1);
+        if (resolved) {
+          return resolved;
+        }
+      }
+      return null;
+    }
+
+    if (typeof payload !== "object") {
+      return null;
+    }
+
+    const record = payload as Record<string, unknown>;
+    for (const [key, value] of Object.entries(record)) {
+      const lower = key.toLowerCase();
+      if (
+        lower === "username" ||
+        lower === "playername" ||
+        lower === "displayname" ||
+        lower === "nameplate" ||
+        lower === "name"
+      ) {
+        const resolved = this.findUsernameInNestedProfile(value, depth + 1);
+        if (resolved) {
+          return resolved;
+        }
+      }
+    }
+
+    return null;
+  }
+
+  private readNestedValue(record: Record<string, unknown>, pathSegments: string[]): unknown {
+    let current: unknown = record;
+    for (const segment of pathSegments) {
+      if (!current || typeof current !== "object" || Array.isArray(current)) {
+        return null;
+      }
+
+      current = (current as Record<string, unknown>)[segment];
+    }
+    return current;
+  }
+
+  private normalizePlayerUsername(value: unknown): string | null {
+    if (typeof value !== "string") {
+      return null;
+    }
+
+    const trimmed = value.trim();
+    if (!trimmed || trimmed.length > 32) {
+      return null;
+    }
+    if (this.normalizeUuid(trimmed)) {
+      return null;
+    }
+    if (!/^[a-zA-Z0-9_]{2,32}$/.test(trimmed)) {
+      return null;
+    }
+    return trimmed;
+  }
+
+  private normalizeUuid(value: string): string | null {
+    const trimmed = value.trim().toLowerCase();
+    if (!trimmed) {
+      return null;
+    }
+
+    if (/^[0-9a-f]{32}$/.test(trimmed)) {
+      return `${trimmed.slice(0, 8)}-${trimmed.slice(8, 12)}-${trimmed.slice(12, 16)}-${trimmed.slice(16, 20)}-${trimmed.slice(20)}`;
+    }
+
+    if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(trimmed)) {
+      return trimmed;
+    }
+
+    return null;
+  }
+
+  private async readPlayerNameCache(): Promise<Map<string, PlayerNameCacheEntry>> {
+    const cachePath = this.getPlayerNameCachePath();
+    if (!(await pathExists(cachePath))) {
+      return new Map();
+    }
+
+    try {
+      const parsed = JSON.parse(await readFile(cachePath, "utf8")) as PlayerNameCacheData;
+      const byUuid = parsed && typeof parsed === "object" && parsed.byUuid && typeof parsed.byUuid === "object"
+        ? parsed.byUuid
+        : {};
+
+      const cache = new Map<string, PlayerNameCacheEntry>();
+      for (const [rawUuid, rawEntry] of Object.entries(byUuid)) {
+        const uuid = this.normalizeUuid(rawUuid);
+        const username = this.normalizePlayerUsername(rawEntry?.username);
+        if (!uuid || !username) {
+          continue;
+        }
+
+        const updatedAt = typeof rawEntry?.updatedAt === "string" && rawEntry.updatedAt.trim()
+          ? rawEntry.updatedAt.trim()
+          : new Date().toISOString();
+
+        cache.set(uuid, {
+          username,
+          updatedAt,
+        });
+      }
+
+      return cache;
+    } catch {
+      return new Map();
+    }
+  }
+
+  private async writePlayerNameCache(cache: Map<string, PlayerNameCacheEntry>): Promise<void> {
+    const payload: PlayerNameCacheData = {
+      byUuid: {},
+    };
+
+    const sortedEntries = [...cache.entries()].sort((left, right) => left[0].localeCompare(right[0]));
+    for (const [uuid, entry] of sortedEntries) {
+      payload.byUuid[uuid] = {
+        username: entry.username,
+        updatedAt: entry.updatedAt,
+      };
+    }
+
+    await writeFile(this.getPlayerNameCachePath(), JSON.stringify(payload, null, 2), "utf8");
+  }
+
+  private async resolveUuidFromWhitelistInput(input: string): Promise<{ uuid: string; username: string | null }> {
+    const uuidInput = this.normalizeUuid(input);
+    if (uuidInput) {
+      return {
+        uuid: uuidInput,
+        username: null,
+      };
+    }
+
+    const usernameInput = this.normalizePlayerUsername(input);
+    if (!usernameInput) {
+      throw new AppError(400, "Provide a valid username or UUID.");
+    }
+
+    const lower = usernameInput.toLowerCase();
+    const localProfiles = await this.readLocalPlayerProfileIndex();
+    for (const [uuid, profile] of localProfiles) {
+      if (profile.username.toLowerCase() === lower) {
+        const cache = await this.readPlayerNameCache();
+        cache.set(uuid, {
+          username: profile.username,
+          updatedAt: new Date().toISOString(),
+        });
+        await this.writePlayerNameCache(cache);
+        return {
+          uuid,
+          username: profile.username,
+        };
+      }
+    }
+
+    const cache = await this.readPlayerNameCache();
+    for (const [uuid, entry] of cache) {
+      if (entry.username.toLowerCase() === lower) {
+        return {
+          uuid,
+          username: entry.username,
+        };
+      }
+    }
+
+    const remote = await this.lookupHytalePlayerIdentity(usernameInput);
+    if (remote) {
+      cache.set(remote.uuid, {
+        username: remote.username,
+        updatedAt: new Date().toISOString(),
+      });
+      await this.writePlayerNameCache(cache);
+      return {
+        uuid: remote.uuid,
+        username: remote.username,
+      };
+    }
+
+    const serverResolved = await this.tryResolveWhitelistUsernameViaServerCommand(usernameInput);
+    if (serverResolved) {
+      cache.set(serverResolved.uuid, {
+        username: serverResolved.username,
+        updatedAt: new Date().toISOString(),
+      });
+      await this.writePlayerNameCache(cache);
+      return serverResolved;
+    }
+
+    if (this.status === "running" || this.status === "starting") {
+      throw new AppError(
+        404,
+        `Could not resolve Hytale username '${usernameInput}'. Try adding the player's UUID directly.`,
+      );
+    }
+
+    throw new AppError(
+      404,
+      `Could not resolve Hytale username '${usernameInput}'. Start the server and try again, or add the UUID directly.`,
+    );
+  }
+
+  private async lookupHytalePlayerIdentity(identifier: string): Promise<{ uuid: string; username: string } | null> {
+    const endpoint = `https://playerdb.co/api/player/hytale/${encodeURIComponent(identifier)}`;
+
+    try {
+      const response = await this.fetchWithTimeout(
+        endpoint,
+        { method: "GET" },
+        Math.max(1_000, Math.min(config.hytale.downloaderApiTimeoutMs, 2_500)),
+      );
+      if (!response.ok) {
+        return null;
+      }
+
+      const payload = (await response.json()) as {
+        data?: {
+          player?: {
+            id?: string;
+            username?: string;
+          };
+        };
+      };
+
+      const uuid = this.normalizeUuid(payload.data?.player?.id ?? "");
+      const username = this.normalizePlayerUsername(payload.data?.player?.username ?? "");
+      if (!uuid || !username) {
+        return null;
+      }
+
+      return { uuid, username };
+    } catch {
+      return null;
+    }
+  }
+
+  private async tryResolveWhitelistUsernameViaServerCommand(
+    username: string,
+  ): Promise<{ uuid: string; username: string } | null> {
+    if (!this.process || (this.status !== "running" && this.status !== "starting")) {
+      return null;
+    }
+
+    const before = await this.readWhitelistFile();
+    const beforeSet = new Set(before.list);
+
+    try {
+      this.sendCommand(`/whitelist add ${username}`);
+    } catch {
+      return null;
+    }
+
+    const deadline = Date.now() + 8_000;
+    while (Date.now() < deadline) {
+      await sleep(300);
+      const current = await this.readWhitelistFile();
+      for (const uuid of current.list) {
+        if (!beforeSet.has(uuid)) {
+          return { uuid, username };
+        }
+      }
+    }
+
+    return null;
   }
 
   async searchCurseForgeMods(options?: {

@@ -72,6 +72,18 @@ export type LogFileSummary = {
   modifiedAt: string;
 };
 
+export type WhitelistEntry = {
+  uuid: string;
+  username: string | null;
+  lastSeenAt: string | null;
+  source: "local-player" | "cache" | "remote" | "unknown";
+};
+
+export type WhitelistState = {
+  enabled: boolean;
+  entries: WhitelistEntry[];
+};
+
 export type InviteSummary = {
   id: number;
   email: string;
@@ -87,6 +99,7 @@ export type BootstrapPayload = {
   mods: ModEntry[];
   backups: BackupEntry[];
   logs: LogFileSummary[];
+  whitelist: WhitelistState;
   invites: InviteSummary[];
 };
 
